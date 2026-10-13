@@ -19,14 +19,14 @@ Or copy the directory to `.opencode/plugins/romm0109-workflow/`. The plugin uses
 
 ## Current server commands and tools
 
-- `/goal <objective>` starts one session goal; `/goal edit`, `pause`, `resume`, `status`, and `clear` preserve lifecycle intent. Goals track observed assistant responses and an optional token budget, plus goal-ID-guarded complete, block, and wait tools. The limits are guidance and state tracking, not a hard host-enforced stop. This port does not automatically wake idle sessions or resume external waits, and does not include the source manager UI or no-progress review.
+- `/goal [--tokens <budget>] <objective>` starts one session goal; `/goal edit [--tokens <budget>] <objective>`, `pause`, `resume`, `status`, and `clear` (`stop`) manage it. An incomplete Goal automatically continues only after native settled idle. `goal_complete` requires the current Goal ID and evidence; `goal_blocked` requires three Goal responses and an evidenced recurring external impasse. `goal_wait` suspends continuation until external input, explicit resume, or an optional persisted safety deadline (minimum ten seconds). Default safety limits pause after 25 responses or three repeated tool-free outputs. Goal and Plan cannot own the same session simultaneously. See [Goal behavior and verification](./docs/goal.md) for budget semantics and remaining differences.
 - `/plan <task>` switches to OpenCode's Plan agent and starts read-only planning. `plan_complete` stores a plan for review, followed by explicit `/plan approve` and `/plan implement`. Matching mutation tools are removed from planning context and matching permission actions are denied. Source allowlists, unsafe shell parsing, settings, export/save, and fresh-session handoff are not implemented.
 - `update_progress` replaces a bounded checklist with at most 50 rows, 503 grapheme clusters per row, and at most one `in_progress` row. An empty list clears progress. The TUI reconstructs state from the active transcript branch; stale storage snapshots are not injected into model context.
 - `/notes`, `/recall`, and `notes_*` / `recall_*` tools provide local storage CRUD and search. Recall quotes are marked but cannot be inserted at the editor cursor; notes are plugin storage records rather than Markdown files.
 - `/file-context <path> [start:end]` reads bounded project-local files; `/tool [name]` inspects registered tool schemas; `/worktree list|add|remove` uses the native project API without force removal.
 - `/analytics` reports content-free event/token/cost metrics from the public server event stream. No external reporting service is contacted.
 
-Goal and Plan starts/resumes intentionally submit prompts and may incur the configured provider's normal model costs. Informational commands do not resume generation. State is stored in OpenCode plugin storage.
+Goal starts/resumes, automatic continuations and safety wakes, and Plan starts/resumes intentionally submit prompts and may incur the configured provider's normal model costs. Informational commands do not resume generation. State is stored in OpenCode plugin storage.
 
 ## Terminal UI entry
 

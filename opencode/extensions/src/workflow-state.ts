@@ -11,6 +11,8 @@ export interface GoalState {
   automaticTurnLimit: number;
   tokensUsed: number;
   tokenBudget?: number;
+  baselineTokens?: number;
+  contractAnchor?: { text: string; afterMessageID?: string; empty: boolean };
   waitingFor?: string;
   resumeAt?: number;
   summary?: string;
@@ -18,6 +20,9 @@ export interface GoalState {
   lastError?: string;
   usageEventIDs?: string[];
   lifecycle: number;
+  noProgressTurns?: number;
+  lastOutputFingerprint?: string;
+  continuationCount?: number;
 }
 
 export type GoalCommand =
@@ -67,6 +72,8 @@ export function parseGoalCommand(raw: string): GoalCommand | { kind: "error"; me
     if (!tokenBudget) return { kind: "error", message: `Invalid token budget: ${rawBudget}` };
     objectiveInput = objective;
   }
+  if (objectiveInput.startsWith("--"))
+    return { kind: "error", message: "Usage: /goal [edit] [--tokens <positive-budget>] <objective>" };
   const objective = objectiveInput.trim();
   if (!objective || objective.length > 4000)
     return { kind: "error", message: "A goal objective must contain 1–4,000 characters." };
@@ -112,7 +119,10 @@ export function transitionGoal(
 }
 
 export function recordGoalUsage(goal: GoalState, tokens: number, now = Date.now()): GoalState {
-  const tokensUsed = goal.tokensUsed + Math.max(0, Math.floor(tokens));
+  const tokensUsed = Math.min(
+    Number.MAX_SAFE_INTEGER,
+    goal.tokensUsed + (Number.isFinite(tokens) ? Math.max(0, Math.floor(tokens)) : 0),
+  );
   const automaticTurns = goal.automaticTurns + 1;
   const status: GoalStatus =
     goal.tokenBudget !== undefined && tokensUsed >= goal.tokenBudget
@@ -135,16 +145,33 @@ export function validGoalState(value: unknown): value is GoalState {
     typeof row.id === "string" &&
     row.id.length > 0 &&
     typeof row.objective === "string" &&
+    row.objective.trim().length > 0 &&
+    row.objective.length <= 4000 &&
     ["active", "paused", "waiting", "blocked", "usage_limited", "budget_limited", "complete"].includes(
       String(row.status),
     ) &&
     Number.isSafeInteger(row.createdAt) &&
     Number.isSafeInteger(row.updatedAt) &&
     Number.isSafeInteger(row.automaticTurns) &&
+    (row.automaticTurns ?? -1) >= 0 &&
     Number.isSafeInteger(row.automaticTurnLimit) &&
+    (row.automaticTurnLimit ?? -1) > 0 &&
     Number.isSafeInteger(row.tokensUsed) &&
+    (row.tokensUsed ?? -1) >= 0 &&
     Number.isSafeInteger(row.lifecycle) &&
-    (row.tokenBudget === undefined || Number.isSafeInteger(row.tokenBudget)) &&
+    (row.lifecycle ?? -1) >= 0 &&
+    (row.tokenBudget === undefined || (Number.isSafeInteger(row.tokenBudget) && row.tokenBudget > 0)) &&
+    (row.resumeAt === undefined || (Number.isSafeInteger(row.resumeAt) && row.resumeAt >= 0)) &&
+    (row.baselineTokens === undefined || Number.isFinite(row.baselineTokens)) &&
+    (row.noProgressTurns === undefined || (Number.isSafeInteger(row.noProgressTurns) && row.noProgressTurns >= 0)) &&
+    (row.continuationCount === undefined ||
+      (Number.isSafeInteger(row.continuationCount) && row.continuationCount >= 0)) &&
+    (row.contractAnchor === undefined ||
+      (row.contractAnchor &&
+        typeof row.contractAnchor === "object" &&
+        typeof row.contractAnchor.text === "string" &&
+        typeof row.contractAnchor.empty === "boolean" &&
+        (row.contractAnchor.afterMessageID === undefined || typeof row.contractAnchor.afterMessageID === "string"))) &&
     (row.usageEventIDs === undefined ||
       (Array.isArray(row.usageEventIDs) && row.usageEventIDs.every((id) => typeof id === "string")))
   );

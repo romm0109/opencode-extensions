@@ -1,4 +1,7 @@
+import { ownsGoal } from "./goal-runtime.ts";
 import type { PluginContext } from "./plugin-types.ts";
+import { workflowTransition } from "./workflow-lock.ts";
+import { validGoalState } from "./workflow-state.ts";
 
 type PlanState = {
   phase: "planning" | "ready" | "approved" | "implementing";
@@ -81,24 +84,25 @@ export async function registerPlan(ctx: PluginContext): Promise<void> {
         required: ["plan"],
         additionalProperties: false,
       },
-      execute: async (input, execution) => {
-        const args = input as { plan: string; questions?: Array<{ question: string; options: string[] }> };
-        if (!args.plan.trim()) throw new Error("A plan must contain implementation steps.");
-        const state = (await ctx.storage.get(key(execution.sessionID))) as PlanState | undefined;
-        if (!isPlanState(state) || state.phase === "implementing")
-          return { content: "No active plan review is available." };
-        const updated: PlanState = { ...state, phase: "ready", plan: args.plan.trim() };
-        await ctx.storage.set(key(execution.sessionID), toJson(updated));
-        const questions = (args.questions ?? [])
-          .map(
-            (item, index) =>
-              `${index + 1}. ${item.question}\n${item.options.map((option, optionIndex) => `   ${String.fromCharCode(65 + optionIndex)}. ${option}`).join("\n")}`,
-          )
-          .join("\n");
-        return {
-          content: `Plan saved for review. No changes have been made. The user must run /plan approve, then /plan implement to hand off.\n\n${updated.plan}${questions ? `\n\nQuestions:\n${questions}` : ""}`,
-        };
-      },
+      execute: async (input, execution) =>
+        workflowTransition(ctx.storage, execution.sessionID, async () => {
+          const args = input as { plan: string; questions?: Array<{ question: string; options: string[] }> };
+          if (!args.plan.trim()) throw new Error("A plan must contain implementation steps.");
+          const state = (await ctx.storage.get(key(execution.sessionID))) as PlanState | undefined;
+          if (!isPlanState(state) || state.phase === "implementing")
+            return { content: "No active plan review is available." };
+          const updated: PlanState = { ...state, phase: "ready", plan: args.plan.trim() };
+          await ctx.storage.set(key(execution.sessionID), toJson(updated));
+          const questions = (args.questions ?? [])
+            .map(
+              (item, index) =>
+                `${index + 1}. ${item.question}\n${item.options.map((option, optionIndex) => `   ${String.fromCharCode(65 + optionIndex)}. ${option}`).join("\n")}`,
+            )
+            .join("\n");
+          return {
+            content: `Plan saved for review. No changes have been made. The user must run /plan approve, then /plan implement to hand off.\n\n${updated.plan}${questions ? `\n\nQuestions:\n${questions}` : ""}`,
+          };
+        }),
     }),
   );
 
@@ -107,74 +111,80 @@ export async function registerPlan(ctx: PluginContext): Promise<void> {
       name: "plan",
       description:
         "Plan read-only work, review, and explicitly hand off: /plan <task>, /plan approve, /plan implement, /plan exit",
-      execute: async ({ sessionID, prompt }) => {
-        const parsed = commandPlan(prompt.text);
-        const stored = await ctx.storage.get(key(sessionID));
-        const current = isPlanState(stored) ? stored : undefined;
-        const notice = async (text: string) => ctx.session.synthetic({ sessionID, text, resume: false });
-        if (parsed.kind === "status") {
-          await notice(
-            current
-              ? `Plan mode ${current.phase}: ${current.task}${current.plan ? `\n\n${current.plan}` : ""}`
-              : "Plan mode is off.",
-          );
-        } else if (parsed.kind === "off" || parsed.kind === "exit") {
-          if (current?.priorAgent) await ctx.session.switchAgent({ sessionID, agent: current.priorAgent });
-          await ctx.storage.remove(key(sessionID));
-          await notice("Plan mode is off.");
-        } else if (parsed.kind === "start") {
-          const task = parsed.task?.trim() || current?.task;
-          if (!task) {
-            await notice("Usage: /plan <task>");
-            return;
+      execute: async ({ sessionID, prompt }) =>
+        workflowTransition(ctx.storage, sessionID, async () => {
+          const parsed = commandPlan(prompt.text);
+          const stored = await ctx.storage.get(key(sessionID));
+          const current = isPlanState(stored) ? stored : undefined;
+          const notice = async (text: string) => ctx.session.synthetic({ sessionID, text, resume: false });
+          if (parsed.kind === "status") {
+            await notice(
+              current
+                ? `Plan mode ${current.phase}: ${current.task}${current.plan ? `\n\n${current.plan}` : ""}`
+                : "Plan mode is off.",
+            );
+          } else if (parsed.kind === "off" || parsed.kind === "exit") {
+            if (current?.priorAgent) await ctx.session.switchAgent({ sessionID, agent: current.priorAgent });
+            await ctx.storage.remove(key(sessionID));
+            await notice("Plan mode is off.");
+          } else if (parsed.kind === "start") {
+            const goal = await ctx.storage.get(`workflow/goal/${sessionID}`);
+            if (validGoalState(goal) && ownsGoal(goal)) {
+              await notice("Goal owns this workflow. Pause or clear Goal before starting Plan.");
+              return;
+            }
+            const task = parsed.task?.trim() || current?.task;
+            if (!task) {
+              await notice("Usage: /plan <task>");
+              return;
+            }
+            const session = await ctx.session.get({ sessionID });
+            const priorAgent = current?.priorAgent ?? session.agent;
+            await ctx.storage.set(
+              key(sessionID),
+              toJson({ phase: "planning", task, ...(priorAgent ? { priorAgent } : {}) }),
+            );
+            await ctx.session.switchAgent({ sessionID, agent: "plan" });
+            await ctx.session.prompt({
+              sessionID,
+              text: `Plan this task without implementing it. Preserve the request exactly: ${task}`,
+              delivery: "steer",
+            });
+          } else if (parsed.kind === "approve") {
+            if (current?.phase !== "ready" || !current.plan) {
+              await notice("There is no completed plan to approve yet.");
+              return;
+            }
+            await ctx.storage.set(key(sessionID), toJson({ ...current, phase: "approved" }));
+            await notice(`Plan approved for handoff. Review it, then run /plan implement to begin.\n\n${current.plan}`);
+          } else if (parsed.kind === "implement") {
+            if (current?.phase !== "approved") {
+              await notice("Approve a completed plan with /plan approve before handing it off.");
+              return;
+            }
+            await ctx.storage.set(key(sessionID), toJson({ ...current, phase: "implementing" }));
+            if (current.priorAgent) {
+              await ctx.session.switchAgent({ sessionID, agent: current.priorAgent });
+            }
+            await ctx.session.prompt({
+              sessionID,
+              text: `The user explicitly approved this plan and handed off implementation. Follow the plan, respecting normal host permissions.\n\nTask: ${current.task}\n\nApproved plan:\n${current.plan}`,
+              delivery: "steer",
+            });
+          } else if (parsed.kind === "finalize") {
+            if (!current || current.phase === "implementing") {
+              await notice("Start a planning session with /plan <task> before asking it to finalize.");
+              return;
+            }
+            await ctx.session.prompt({
+              sessionID,
+              text: `Finalize the read-only plan for this task now. Check that it is concrete, ordered, and covers validation. Do not implement it. Submit it with plan_complete and include only blocking clarification questions. Task: ${current.task}`,
+              delivery: "steer",
+            });
+          } else {
+            await notice("Unknown /plan command. Use /plan <task>, status, approve, implement, or exit.");
           }
-          const session = await ctx.session.get({ sessionID });
-          const priorAgent = current?.priorAgent ?? session.agent;
-          await ctx.storage.set(
-            key(sessionID),
-            toJson({ phase: "planning", task, ...(priorAgent ? { priorAgent } : {}) }),
-          );
-          await ctx.session.switchAgent({ sessionID, agent: "plan" });
-          await ctx.session.prompt({
-            sessionID,
-            text: `Plan this task without implementing it. Preserve the request exactly: ${task}`,
-            delivery: "steer",
-          });
-        } else if (parsed.kind === "approve") {
-          if (current?.phase !== "ready" || !current.plan) {
-            await notice("There is no completed plan to approve yet.");
-            return;
-          }
-          await ctx.storage.set(key(sessionID), toJson({ ...current, phase: "approved" }));
-          await notice(`Plan approved for handoff. Review it, then run /plan implement to begin.\n\n${current.plan}`);
-        } else if (parsed.kind === "implement") {
-          if (current?.phase !== "approved") {
-            await notice("Approve a completed plan with /plan approve before handing it off.");
-            return;
-          }
-          await ctx.storage.set(key(sessionID), toJson({ ...current, phase: "implementing" }));
-          if (current.priorAgent) {
-            await ctx.session.switchAgent({ sessionID, agent: current.priorAgent });
-          }
-          await ctx.session.prompt({
-            sessionID,
-            text: `The user explicitly approved this plan and handed off implementation. Follow the plan, respecting normal host permissions.\n\nTask: ${current.task}\n\nApproved plan:\n${current.plan}`,
-            delivery: "steer",
-          });
-        } else if (parsed.kind === "finalize") {
-          if (!current || current.phase === "implementing") {
-            await notice("Start a planning session with /plan <task> before asking it to finalize.");
-            return;
-          }
-          await ctx.session.prompt({
-            sessionID,
-            text: `Finalize the read-only plan for this task now. Check that it is concrete, ordered, and covers validation. Do not implement it. Submit it with plan_complete and include only blocking clarification questions. Task: ${current.task}`,
-            delivery: "steer",
-          });
-        } else {
-          await notice("Unknown /plan command. Use /plan <task>, status, approve, implement, or exit.");
-        }
-      },
+        }),
     }),
   );
 }

@@ -17,6 +17,7 @@ function harness() {
       get: async (key) => values.get(key),
       set: async (key, value) => values.set(key, value),
       remove: async (key) => values.delete(key),
+      scan: async () => ({ entries: [] }),
     },
     tool: { transform: async (register) => register({ add: (tool) => tools.push(tool) }) },
     permission: { hook: async (name, callback) => permissionHooks.set(name, callback) },
