@@ -1,50 +1,69 @@
 import { Plugin } from "@opencode/plugin"
+import { registerGoal } from "./goal.ts"
+import { registerAdditionalExtensions } from "./feature-modules.ts"
+import { registerNotesRecall } from "./notes-recall.ts"
+import { registerPlan } from "./plan.ts"
+import { registerAnalytics } from "./analytics.ts"
 
-type ProgressStep = { text: string; done: boolean }
-type GoalState = { objective: string; status: "active" | "paused"; createdAt: number }
+type ProgressStatus = "pending" | "in_progress" | "completed" | "blocked"
+type ProgressStep = { text: string; status: ProgressStatus }
 
-const GOAL_PREFIX = "session/goal/"
-const PLAN_PREFIX = "session/plan/"
-const PROGRESS_PREFIX = "session/progress/"
+const PROGRESS_STATUSES = new Set<ProgressStatus>(["pending", "in_progress", "completed", "blocked"])
 
-function clean(value: unknown): string {
-  return typeof value === "string" ? value.trim().slice(0, 4000) : ""
+function graphemeCount(value: string): number {
+  return [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(value)].length
 }
 
 function validSteps(value: unknown): ProgressStep[] | undefined {
-  if (!Array.isArray(value) || value.length > 30) return undefined
+  if (!Array.isArray(value) || value.length > 50) return undefined
   const result: ProgressStep[] = []
+  let activeCount = 0
   for (const item of value) {
     if (!item || typeof item !== "object") return undefined
     const row = item as Record<string, unknown>
-    const text = clean(row.text)
-    if (!text || typeof row.done !== "boolean") return undefined
-    result.push({ text, done: row.done })
+    if (typeof row.text !== "string" || !row.text.trim() || graphemeCount(row.text) > 503) return undefined
+    if (typeof row.status !== "string" || !PROGRESS_STATUSES.has(row.status as ProgressStatus)) return undefined
+    if (row.status === "in_progress" && ++activeCount > 1) return undefined
+    result.push({ text: row.text, status: row.status as ProgressStatus })
   }
   return result
 }
 
 function renderProgress(steps: ProgressStep[]): string {
-  return steps.map((step) => `${step.done ? "[x]" : "[ ]"} ${step.text}`).join("\n")
+  const icon: Record<ProgressStatus, string> = {
+    pending: "[ ]",
+    in_progress: "[~]",
+    completed: "[x]",
+    blocked: "[!]",
+  }
+  return steps.map((step) => `${icon[step.status]} ${step.text}`).join("\n")
 }
 
 export default Plugin.define({
   id: "romm0109.workflow",
   async setup(ctx) {
+    const cleanup = await registerGoal(ctx)
+    const cleanupAnalytics = await registerAnalytics(ctx)
+    await registerPlan(ctx)
+    await registerNotesRecall(ctx)
+    await registerAdditionalExtensions(ctx)
     await ctx.tool.transform((editor) => {
       editor.add({
         name: "update_progress",
-        description: "Set or update the current session's checklist. This records progress; it does not claim work is complete.",
+        description: "Replace this session's current progress snapshot. An empty steps array clears progress.",
         input: {
           type: "object",
           properties: {
             steps: {
               type: "array",
-              maxItems: 30,
+              maxItems: 50,
               items: {
                 type: "object",
-                properties: { text: { type: "string" }, done: { type: "boolean" } },
-                required: ["text", "done"],
+                properties: {
+                  text: { type: "string" },
+                  status: { type: "string", enum: ["pending", "in_progress", "completed", "blocked"] },
+                },
+                required: ["text", "status"],
                 additionalProperties: false,
               },
             },
@@ -54,79 +73,15 @@ export default Plugin.define({
         },
         execute: async (input, execution) => {
           const steps = validSteps((input as { steps?: unknown }).steps)
-          if (!steps || steps.length === 0) {
-            return { content: "Progress was not changed. Supply 1–30 steps with text and done fields." }
+          if (!steps) return { content: "Progress was not changed. Supply at most 50 steps; each requires text (up to 503 graphemes) and a valid status, with at most one in_progress step." }
+          if (steps.length === 0) {
+            return { content: "Progress cleared for this session." }
           }
-          await ctx.storage.set(`${PROGRESS_PREFIX}${execution.sessionID}`, steps)
           return { content: `Progress saved for this session:\n${renderProgress(steps)}` }
         },
       })
     })
 
-    await ctx.session.hook("context", async (event) => {
-      const [goal, planning, progress] = await Promise.all([
-        ctx.storage.get(`${GOAL_PREFIX}${event.sessionID}`),
-        ctx.storage.get(`${PLAN_PREFIX}${event.sessionID}`),
-        ctx.storage.get(`${PROGRESS_PREFIX}${event.sessionID}`),
-      ])
-      const lines: string[] = []
-      if (goal && typeof goal === "object") {
-        const value = goal as Partial<GoalState>
-        if (typeof value.objective === "string" && value.status === "active") {
-          lines.push(`Active goal: ${value.objective}`, "Work toward this goal; verify completion before claiming it is done.")
-        }
-      }
-      if (planning === true) {
-        lines.push("Planning mode is active. Analyze and propose a plan without modifying files or running mutating tools.")
-      }
-      const steps = validSteps(progress)
-      if (steps?.length) lines.push(`Current progress:\n${renderProgress(steps)}`)
-      if (lines.length) event.system.push({ type: "text", text: lines.join("\n\n") })
-    })
-
-    await ctx.command.transform((editor) => {
-      editor.add({
-        name: "goal",
-        description: "Start or inspect a session-scoped goal: /goal <objective>, /goal status, /goal clear",
-        execute: async ({ sessionID, prompt }) => {
-          const argument = clean(prompt.text).replace(/^\/goal\s*/i, "")
-          const key = `${GOAL_PREFIX}${sessionID}`
-          if (argument.toLowerCase() === "clear") {
-            await ctx.storage.remove(key)
-            await ctx.session.synthetic({ sessionID, text: "Goal cleared." })
-            return
-          }
-          if (argument.toLowerCase() === "status" || !argument) {
-            const goal = await ctx.storage.get(key) as Partial<GoalState> | undefined
-            await ctx.session.synthetic({ sessionID, text: goal?.objective ? `Active goal: ${goal.objective}` : "No active goal." })
-            return
-          }
-          await ctx.storage.set(key, { objective: argument, status: "active", createdAt: Date.now() })
-          await ctx.storage.remove(`${PROGRESS_PREFIX}${sessionID}`)
-          await ctx.session.synthetic({ sessionID, text: `Goal set: ${argument}` })
-        },
-      })
-
-      editor.add({
-        name: "plan",
-        description: "Toggle a read-only planning instruction for this session: /plan on|off|status",
-        execute: async ({ sessionID, prompt }) => {
-          const argument = clean(prompt.text).replace(/^\/plan\s*/i, "").toLowerCase()
-          const key = `${PLAN_PREFIX}${sessionID}`
-          if (argument === "off") {
-            await ctx.storage.set(key, false)
-            await ctx.session.synthetic({ sessionID, text: "Planning mode is off." })
-            return
-          }
-          if (argument === "status") {
-            const enabled = await ctx.storage.get(key)
-            await ctx.session.synthetic({ sessionID, text: enabled === true ? "Planning mode is on." : "Planning mode is off." })
-            return
-          }
-          await ctx.storage.set(key, true)
-          await ctx.session.synthetic({ sessionID, text: "Planning mode is on. The plugin will request read-only planning behavior in future model calls; it does not enforce tool permissions." })
-        },
-      })
-    })
+    return () => { cleanup(); cleanupAnalytics() }
   },
 })

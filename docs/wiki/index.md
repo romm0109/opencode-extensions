@@ -2,7 +2,7 @@
 
 ## Features
 
-- [Workflow helpers](features/workflow-helpers.md) — session-scoped goal, planning guidance, and progress checklist.
+- [Workflow helpers](features/workflow-helpers.md) — server-side goal/plan/progress and native CLI/TUI status and checklist panels.
 
 ## Open questions
 

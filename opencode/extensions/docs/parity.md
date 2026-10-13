@@ -6,41 +6,41 @@ Inventory source: the 34 active entries in the upstream root `package.json` `pi.
 
 | Pi source | Intended OpenCode mapping | Current state / gap |
 | --- | --- | --- |
-| `pi-accounts` | Integration credentials and account selection | Not ported. OpenCode credential activation is not yet shown to be session-scoped; switching credentials globally would not preserve Pi behavior. |
-| `pi-analytics` | Server event stream, tool hooks, plugin storage, commands | Not ported. Need verify event coverage and preserve the source's content-free metric policy. |
+| `pi-accounts` | Integration credentials and account selection | Not ported. Credential activation is not session-scoped, so named per-session credential switching cannot be matched safely. |
+| `pi-analytics` | Server event stream, plugin storage, command | Partial: `/analytics` projects selected public events to content-free aggregates. No settings or remote export. |
 | `pi-btw` | Command plus transient generation or child session | Not ported. The Pi editor-preserving side pane and answer bring-back lack a verified public editor API. |
-| `pi-cache-hit-monitor` | Request/tool events and TUI status slot | Not ported. Token/cache metadata coverage and usable TUI placement need validation. |
-| `pi-caffeinate` | Lifecycle status events plus OS sleep inhibitor | Not ported. Host lifecycle/idle signals and cross-platform inhibitor behavior need isolated tests. |
+| `pi-cache-hit-monitor` | Assistant token data and TUI panel | Partial: `/cache-hit-monitor` reports cache ratio from server-reported tokens. No warning thresholds or estimated savings. |
+| `pi-caffeinate` | Lifecycle events plus OS sleep inhibitor | Not ported. Requires an OS-level inhibitor process outside the plugin's safe public API; cross-platform behavior needs a separate design. |
 | `pi-chat` | Separate peer-to-peer network process and commands | Not ported. Independent feature, but requires networking, identity and consent-safe tests. |
 | `pi-codex-compact` | `session.hook("compaction")` plus Responses provider protocol | Not ported. Hook can inject `summary`, `providerState`, `metadata`, and `tokens`; opaque Codex checkpoint lineage, auth, endpoint and recovery are unverified, so summary-only is not equivalent. |
 | `pi-context-management` | Context hook and native compaction hook | Not ported. Must prove exact history/branch semantics and avoid interfering with native compaction or other plugins. |
-| `pi-dotenv` | CLI launch environment or server initialization | Not ported. Plugin setup occurs too late to promise Pi's early provider-credential discovery. |
-| `pi-file-context` | File tools or command with URI attachments | Not ported. OpenCode exposes file APIs, but editor insertion/selection and immutable Git provenance require a verified user flow. |
+| `pi-dotenv` | CLI launch environment or server initialization | Not ported. Plugin setup is too late for reliable provider credential discovery; it must not mutate global process environment. |
+| `pi-file-context` | Bounded project file read command | Partial: `/file-context <path> [start:end]` enforces project containment and bounded reads. No prompt cursor insertion or Git provenance. |
 | `pi-fleet` | Server session APIs, persistent PTY and TUI integration | Not ported. Need verify APIs for creating/connecting bounded side sessions and split terminal behavior. |
 | `pi-github-pr` | GitHub integration/client and VCS APIs | Not ported. Requires auth reuse, current branch resolution, check/review/comment aggregation and fixtures. |
-| `pi-goal` | Session-scoped storage, context hook, commands, status/inbox events | Partial: `/goal`, context guidance, and `update_progress` are implemented. No automatic continuation, queue, wait protocol, exact idle-gated retries, token accounting, or completion lifecycle. |
-| `pi-herdr` | Lifecycle events plus included skill/instructions | Not ported. Herdr protocol and safe terminal-orchestration guidance need separate validation. |
+| `pi-goal` | Session storage, context hook, commands and server events | Partial: start/edit/pause/resume/status/clear, goal-ID-guarded complete/block/wait, observed response tracking, and optional token budget. Limits are guidance/state tracking, not a hard host-enforced stop. Manual assistant responses can contribute to the observed count. No automatic idle continuation, external wait wakeup, no-progress review, or management UI. |
+| `pi-herdr` | Skills/instructions and lifecycle guidance | Not ported. Herdr protocol and cross-agent terminal orchestration need separate security review and scenario tests. |
 | `pi-inspect` | Public session/client APIs plus local read-only viewer | Not ported. Need prove complete context and live tool activity are available without private APIs. |
 | `pi-typesafe-search` | File search and external Jev reranking service | Not ported. SQLite FTS5 may be local; Jev adapter needs fixture-based protocol tests and no paid calls. |
 | `pi-langfuse` | OpenTelemetry/event hooks plus Langfuse client | Not ported. Trace fidelity and sensitive-field filtering are unverified. |
-| `pi-lsp` | Custom server tools with LSP processes | Not ported. Can be native tools, but language discovery, process lifecycle and diagnostics/actions need full port/tests. |
-| `pi-notes` | Commands/tools and isolated embedded-agent session | Not ported. OpenCode server API lacks Pi's exact embedded-agent workspace flow; safety boundary needs redesign. |
-| `pi-plan-mode` | Built-in Plan agent or permission rules and commands | Partial: `/plan` adds advisory context only. It does not enforce read-only access or switch agents, so it is explicitly not equivalent yet. |
-| `pi-recall` | Commands, session APIs, storage | Not ported. Saving/quoting across sessions is plausible; exact selection UI and insertion route are unverified. |
-| `pi-stamp` | Event capture and custom TUI component | Not ported. No verified transcript-row decoration slot; a panel/status alternative would be a visible behavior change. |
-| `pi-starship` | CLI/TUI status rendering | Not ported. Starship module semantics and the required terminal extension surface need a dedicated CLI plugin. |
-| `pi-statusline` | CLI/TUI status rendering | Not ported. Context/cost fields, presets, extension state, and layout need CLI plugin validation. |
+| `pi-lsp` | Custom server tools with LSP processes | Not ported. Language discovery, process lifecycle, diagnostics/actions and executable acquisition need fixture and permission tests. |
+| `pi-notes` | Commands/tools and storage | Partial: bounded local notes CRUD and `/notes` listing. Notes are plugin records, not Markdown files; no embedded-agent workflow. |
+| `pi-plan-mode` | Built-in Plan agent, permission hook, commands | Partial: read-only mutation filtering/denial, plan completion, and explicit approve/implement handoff. No source allowlist/shell policy/settings/export/fresh-session review UI. |
+| `pi-recall` | Commands, session storage | Partial: save/search/quote/delete tools. No message picker, editor cursor insertion, or confirmation UI. |
+| `pi-stamp` | Event data and TUI panel | Partial: `/stamp` summarizes available response timings/tool counts. No inline row decoration; v2 has no public decoration slot. |
+| `pi-starship` | CLI/TUI status rendering | Not ported. Starship requires a shell subprocess; no prompt-aware subprocess API was verified in the v2 CLI plugin. |
+| `pi-statusline` | CLI/TUI status rendering | Partial: footer shows session status/title/model/cost/tokens. Presets, extension state, and layout settings remain missing. |
 | `pi-subagents` | Session API, bounded child sessions and messaging | Not ported. Public server `ctx.session` does not expose all Pi session controls; do not imply parity until child ownership and messaging are tested. |
 | `pi-sync` | CLI command with Git, WebDAV, R2 and S3 transports | Not ported. Must define OpenCode allowlist/config/session formats and safe conflict handling per transport. |
-| `pi-ticker` | CLI/TUI widget plus quote fetcher | Not ported. TUI placement, market data failures, staleness and network behavior need implementation. |
-| `pi-progress` | Custom tool, session storage and context hook | Partial: `update_progress` stores a per-session checklist and adds it to later context. No persistent branch reconciliation, restored compaction boundary, widget, or completion summary. |
-| `pi-tool` | Command inspecting `ctx.tool.list()` | Not ported. The public tool registry can expose effective tool metadata, but prompt-guideline/source detail availability needs verification. |
-| `pi-tui-kit-showcase` | Private CLI/TUI plugin test/demo | Not ported. It is active in the Pi root manifest but explicitly source-only and private; map as a development showcase, not a user feature. |
+| `pi-ticker` | CLI/TUI widget plus quote fetcher | Not ported. Quote fetching adds network activity; provider, staleness, failure, and configuration semantics need a transparent design. |
+| `pi-progress` | Canonical tool plus TUI panel | Partial: bounded checklist tool and branch-aware `/workflow` panel rebuilt from current messages. Compacted-away tool input cannot be restored; no dismiss/completion toast or adaptive widget. |
+| `pi-tool` | Command inspecting `ctx.tool.list()` | Partial: `/tool` lists and inspects public registered schemas. Does not change tool availability or show prompt source. |
+| `pi-tui-kit-showcase` | Private CLI/TUI test/demo | Partial: `/tui-kit-showcase` demonstrates native v2 slots and panels, not Pi custom widgets/editor controls. |
 | `pi-typesafe` | Typed Jev integration command/tool | Not ported. Requires protocol validation and explicit external service configuration; no paid/fallback calls in tests. |
 | `pi-typesafe-compact` | Jev selection plus native compaction flow | Not ported. Selection, transcript boundaries and compaction behavior need fixture tests. |
-| `pi-usage` | Provider credential/usage APIs and CLI command | Not ported. OpenCode doesn't expose every source provider's quota API through a single equivalent; `/fast` and reset redemption are not covered. |
-| `pi-worktree` | Native `ctx.worktree` API and commands | Not ported. OpenCode has project-scoped create/list/remove/refresh operations; matching Pi branch, session carryover, confirm and prune semantics still needs implementation. |
-| `pi-tui-kit` library | Reusable OpenCode CLI/TUI helpers | Not ported. OpenCode has distinct CLI-plugin interfaces; no Pi TUI components should be reused as if compatible. |
+| `pi-usage` | Provider credential/usage APIs and CLI command | Not ported. OpenCode has no unified public quota API for source providers. No credential scraping or reset purchases are included. |
+| `pi-worktree` | Native `ctx.worktree` API and command | Partial: `/worktree list|add|remove`, with non-force removal. No session carryover, confirm manager, or prune behavior. |
+| `pi-tui-kit` library | Reusable OpenCode CLI/TUI helpers | Partial: native TUI slots/panels are used directly by this port; no general helper library or Pi component compatibility layer. |
 
 ## Cross-cutting API limits verified so far
 
