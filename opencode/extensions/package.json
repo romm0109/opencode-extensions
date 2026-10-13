@@ -1,0 +1,26 @@
+{
+  "name": "@romm0109/opencode-extensions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode v2 terminal workflow ports from narumiruna/pi-extensions",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "2.0.28",
+    "effect": "^4.0.0"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.0.28",
+    "@opencode/client": "2.0.28",
+    "@types/node": "^24.0.0",
+    "effect": "4.0.1",
+    "typescript": "^5.8.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  }
+}
