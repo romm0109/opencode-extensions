@@ -1,4 +1,5 @@
 import type { Context } from "@opencode/plugin/tui/context";
+import { createCoordinationTui } from "./coordination/index.ts";
 
 type JsonRecord = Record<string, unknown>;
 type Element = unknown;
@@ -406,4 +407,13 @@ export function createTuiPlugin(dependencies: TuiDependencies = {}) {
   };
 }
 
-export default createTuiPlugin();
+const workflowPlugin = createTuiPlugin();
+const coordinationPlugin = createCoordinationTui();
+
+export default {
+  id: workflowPlugin.id,
+  async setup(ctx: Context) {
+    await workflowPlugin.setup(ctx);
+    await coordinationPlugin.setup(ctx);
+  },
+};

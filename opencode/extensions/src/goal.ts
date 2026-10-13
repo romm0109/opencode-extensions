@@ -15,6 +15,10 @@ const GOAL_TOOLS = ["goal_complete", "goal_blocked", "goal_wait"] as const;
 
 export async function registerGoal(ctx: PluginContext): Promise<() => void> {
   const stream = new AbortController();
+  // OpenCode step events do not carry a generate-request ID. Keep the goal
+  // generation that authorized each in-flight response so delayed events
+  // cannot charge a replacement goal after clear/restart.
+  const generations = new Map<string, Array<{ id: string; lifecycle: number }>>();
   const queues = new Map<string, Promise<void>>();
   const mutate = (sessionID: string, update: (current: GoalState | undefined) => GoalState | undefined) => {
     const key = GOAL_KEY(sessionID);
@@ -37,10 +41,28 @@ export async function registerGoal(ctx: PluginContext): Promise<() => void> {
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: stream.signal })) {
+          if (
+            event.type === "session.execution.interrupted" ||
+            event.type === "session.execution.failed" ||
+            event.type === "session.execution.succeeded"
+          ) {
+            generations.delete(event.data.sessionID);
+            continue;
+          }
           if (event.type !== "session.step.ended") continue;
+          const pending = generations.get(event.data.sessionID) ?? [];
+          const generation = pending.shift();
+          if (pending.length) generations.set(event.data.sessionID, pending);
+          else generations.delete(event.data.sessionID);
+          if (!generation) continue;
           const tokens = event.data.tokens.input + event.data.tokens.output + event.data.tokens.reasoning;
           await mutate(event.data.sessionID, (current) => {
-            if (current?.status !== "active") return current;
+            if (
+              current?.status !== "active" ||
+              current.id !== generation.id ||
+              current.lifecycle !== generation.lifecycle
+            )
+              return current;
             const seen = current.usageEventIDs ?? [];
             if (seen.includes(event.id)) return current;
             const next = recordGoalUsage(current, tokens, event.created);
@@ -80,6 +102,13 @@ export async function registerGoal(ctx: PluginContext): Promise<() => void> {
         const remaining = current.tokenBudget - current.tokensUsed;
         event.options.maxTokens = Math.min(event.options.maxTokens ?? remaining, remaining);
       }
+      const pending = generations.get(event.sessionID) ?? [];
+      pending.push({ id: current.id, lifecycle: current.lifecycle });
+      // A long-lived session can be interrupted without a corresponding
+      // event in some host/error paths. Bound stale tickets; interruption
+      // events clear the queue as soon as the host reports cancellation.
+      if (pending.length > 100) pending.splice(0, pending.length - 100);
+      generations.set(event.sessionID, pending);
       return;
     }
     await mutate(event.sessionID, (latest) =>
@@ -240,9 +269,11 @@ export async function registerGoal(ctx: PluginContext): Promise<() => void> {
         }
         if (parsed.kind === "clear") {
           await mutate(sessionID, () => undefined);
+          generations.delete(sessionID);
+          await ctx.session.interrupt({ sessionID });
           await ctx.session.synthetic({
             sessionID,
-            text: "Goal state cleared. Any already-running turn was not interrupted.",
+            text: "Goal state cleared and the current turn interrupted.",
             resume: false,
           });
           return;

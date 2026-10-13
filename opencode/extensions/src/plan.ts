@@ -83,6 +83,7 @@ export async function registerPlan(ctx: PluginContext): Promise<void> {
       },
       execute: async (input, execution) => {
         const args = input as { plan: string; questions?: Array<{ question: string; options: string[] }> };
+        if (!args.plan.trim()) throw new Error("A plan must contain implementation steps.");
         const state = (await ctx.storage.get(key(execution.sessionID))) as PlanState | undefined;
         if (!isPlanState(state) || state.phase === "implementing")
           return { content: "No active plan review is available." };
@@ -161,7 +162,15 @@ export async function registerPlan(ctx: PluginContext): Promise<void> {
             delivery: "steer",
           });
         } else if (parsed.kind === "finalize") {
-          await notice("Submit a concrete plan using plan_complete, then review and approve it.");
+          if (!current || current.phase === "implementing") {
+            await notice("Start a planning session with /plan <task> before asking it to finalize.");
+            return;
+          }
+          await ctx.session.prompt({
+            sessionID,
+            text: `Finalize the read-only plan for this task now. Check that it is concrete, ordered, and covers validation. Do not implement it. Submit it with plan_complete and include only blocking clarification questions. Task: ${current.task}`,
+            delivery: "steer",
+          });
         } else {
           await notice("Unknown /plan command. Use /plan <task>, status, approve, implement, or exit.");
         }

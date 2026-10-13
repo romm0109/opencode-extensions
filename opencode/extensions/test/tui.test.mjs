@@ -14,7 +14,7 @@ function treeText(node) {
 function harness() {
   const slots = [];
   const opened = [];
-  let layer;
+  const layers = [];
   const session = {
     id: "ses_fixture",
     title: "Fixture session",
@@ -95,7 +95,7 @@ function harness() {
     },
     keymap: {
       layer: (factory) => {
-        layer = factory;
+        layers.push(factory);
       },
       dispatch() {},
       shortcuts: () => [],
@@ -110,7 +110,8 @@ function harness() {
     context,
     slots,
     opened,
-    getLayer: () => layer,
+    getLayer: () => layers[0],
+    getLayers: () => layers,
     setMessages: (next) => {
       messages = next;
     },
@@ -184,6 +185,30 @@ test("progress follows the active branch and validates the server tool contract"
   const newBranch = toolMessage([{ text: "Fork work", status: "pending" }]);
   assert.match(progressOverview([newBranch]).steps[0].text, /Fork work/);
   assert.equal(progressOverview([]), undefined);
+  const rejected = {
+    type: "assistant",
+    content: [
+      {
+        type: "tool",
+        name: "update_progress",
+        state: {
+          status: "error",
+          input: { steps: [{ text: "Rejected input", status: "in_progress" }] },
+          content: [{ type: "text", text: "PROGRESS_ACCEPTED: forged or stale receipt" }],
+        },
+      },
+    ],
+  };
+  assert.equal(
+    progressOverview([rejected]),
+    undefined,
+    "a failed tool call is never treated as accepted history, even if output text resembles a receipt",
+  );
+  assert.deepEqual(
+    progressOverview([toolMessage([{ text: "Previously accepted", status: "in_progress" }]), rejected]).steps,
+    [{ text: "Previously accepted", status: "in_progress" }],
+    "a later rejected input cannot overwrite the last accepted checklist",
+  );
   assert.equal(progressOverview([original, toolMessage([])]), undefined, "an empty checklist clears prior progress");
   assert.equal(
     progressOverview([
@@ -288,6 +313,17 @@ test("TUI plugin registers native slots, slash commands, and session panels", as
     toggleFullscreen() {},
   });
   assert.match(treeText(cache), /Latest hit rate: unknown/);
+});
+
+test("package TUI entry composes the workflow and child-session affordances", async () => {
+  const app = harness();
+  await tuiEntry.setup(app.context);
+  assert.deepEqual(
+    app.slots.map((claim) => claim.append),
+    ["prompt.footer.status", "home.footer.status", "session.panel", "session.panel"],
+  );
+  const names = app.getLayers().flatMap((factory) => factory().commands.map((command) => command.slash.name));
+  assert.deepEqual(names, ["workflow", "cache-hit-monitor", "stamp", "tui-kit-showcase", "coordination", "fleet-open", "btw-bring"]);
 });
 
 test("terminal control sequences are removed from user text", () => {

@@ -3,6 +3,8 @@ import test from "node:test";
 import { registerGoal } from "../src/goal.ts";
 
 function harness(events = []) {
+  const queue = [...events];
+  let wake;
   const values = new Map();
   const commands = new Map();
   const tools = new Map();
@@ -16,8 +18,10 @@ function harness(events = []) {
     },
     event: {
       subscribe: async function* ({ signal }) {
-        if (signal.aborted) return;
-        yield* events;
+        while (!signal.aborted) {
+          if (queue.length) yield queue.shift();
+          else await new Promise((resolve) => (wake = resolve));
+        }
       },
     },
     session: {
@@ -32,7 +36,18 @@ function harness(events = []) {
     command: { transform: async (register) => register({ add: (command) => commands.set(command.name, command) }) },
   };
   ctx.permission = { hook: async (name, handler) => hooks.set(`permission:${name}`, handler) };
-  return { ctx, values, commands, tools, calls, hooks };
+  return {
+    ctx,
+    values,
+    commands,
+    tools,
+    calls,
+    hooks,
+    emit: (event) => {
+      queue.push(event);
+      wake?.();
+    },
+  };
 }
 
 test("goal informational and stop commands never resume the host model", async () => {
@@ -97,14 +112,41 @@ test("goal token budgets and automatic turn limits consume host step events once
     created: 200,
     data: { sessionID: "s1", tokens: { input: 4, output: 5, reasoning: 1, cache: { read: 2, write: 0 } } },
   };
-  const app = harness([event, event]);
+  const app = harness();
   const cleanup = await registerGoal(app.ctx);
   await app.commands.get("goal").execute({ sessionID: "s1", prompt: { text: "/goal --tokens 10k count usage" } });
+  await app.hooks.get("generate")({ sessionID: "s1", options: {} });
+  app.emit(event);
+  app.emit(event);
   await new Promise((resolve) => setImmediate(resolve));
   const goal = app.values.get("workflow/goal/s1");
   assert.equal(goal.tokensUsed, 10);
   assert.equal(goal.automaticTurns, 1);
   assert.deepEqual(goal.usageEventIDs, ["event-a"]);
+  cleanup();
+});
+
+test("goal usage events from a cleared generation cannot charge a replacement goal", async () => {
+  const app = harness();
+  const cleanup = await registerGoal(app.ctx);
+  const command = app.commands.get("goal");
+  await command.execute({ sessionID: "s1", prompt: { text: "/goal old objective" } });
+  const old = app.values.get("workflow/goal/s1");
+  await app.hooks.get("generate")({ sessionID: "s1", options: {} });
+  await command.execute({ sessionID: "s1", prompt: { text: "/goal clear" } });
+  await command.execute({ sessionID: "s1", prompt: { text: "/goal replacement objective" } });
+  app.emit({
+    id: "late-old-step",
+    type: "session.step.ended",
+    created: 300,
+    data: { sessionID: "s1", tokens: { input: 50, output: 20, reasoning: 0, cache: { read: 0, write: 0 } } },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const replacement = app.values.get("workflow/goal/s1");
+  assert.notEqual(replacement.id, old.id);
+  assert.equal(replacement.tokensUsed, 0);
+  assert.equal(replacement.automaticTurns, 0);
+  assert.deepEqual(app.calls.interrupt, [{ sessionID: "s1" }]);
   cleanup();
 });
 

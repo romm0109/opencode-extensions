@@ -54,6 +54,8 @@ function harness() {
 test("goal state and context are isolated per session", async () => {
   const app = harness();
   await plugin.setup(app.context);
+  for (const name of ["btw", "fleet", "herdr", "subagents"])
+    assert.ok(app.commands.has(name), `server package entry registers /${name}`);
   const goal = app.commands.get("goal");
   await goal.execute({ sessionID: "s1", prompt: { text: "/goal ship the feature" }, delivery: "steer" });
   assert.match(app.values.get("prompt/s1"), /ship the feature/);
@@ -137,7 +139,39 @@ test("plan review is enforced read-only until explicit approval and handoff", as
   const permission = { sessionID: "s1", action: "write", resources: [], effect: "ask" };
   await app.getPermissionHook()(permission);
   assert.equal(permission.effect, "deny");
+  const completion = app.tools.find((entry) => entry.name === "plan_complete");
+  assert.equal(completion.options.codemode, false, "plan completion must remain callable outside CodeMode nesting");
+  await completion.execute({ plan: "1. Inspect\n2. Validate" }, { sessionID: "s1" });
+  await plan.execute({ sessionID: "s1", prompt: { text: "/plan finalize" }, delivery: "steer" });
+  assert.match(app.values.get("prompt/s1"), /Finalize the read-only plan/);
+  assert.match(app.values.get("prompt/s1"), /Do not implement it/);
+  await plan.execute({ sessionID: "s1", prompt: { text: "/plan approve" }, delivery: "steer" });
+  assert.equal(app.values.get("workflow/plan/s1").phase, "approved");
+  await plan.execute({ sessionID: "s1", prompt: { text: "/plan implement" }, delivery: "steer" });
+  assert.match(app.values.get("prompt/s1"), /explicitly approved/);
   await plan.execute({ sessionID: "s1", prompt: { text: "/plan exit" }, delivery: "steer" });
   assert.equal(app.values.has("workflow/plan/s1"), false);
   assert.equal(app.values.get("agent/s1"), "build");
+});
+
+test("plan context removes CodeMode and all non-allowlisted nested execution tools", async () => {
+  const app = harness();
+  await plugin.setup(app.context);
+  await app.commands.get("plan").execute({ sessionID: "s1", prompt: { text: "/plan inspect safely" } });
+  const context = {
+    sessionID: "s1",
+    system: [],
+    messages: [],
+    options: {},
+    tools: { read: {}, code_mode: {}, "plan_complete": {}, bash: {}, edit: {} },
+    model: {},
+    agent: "plan",
+  };
+  await app.getContextHook()(context);
+  assert.deepEqual(Object.keys(context.tools).sort(), ["plan_complete", "read"]);
+  const completion = app.tools.find((entry) => entry.name === "plan_complete");
+  assert.equal(completion.options.codemode, false);
+  const nested = { sessionID: "s1", action: "execute", resources: [], effect: "ask" };
+  await app.getPermissionHook()(nested);
+  assert.equal(nested.effect, "deny");
 });

@@ -4,6 +4,7 @@ import { registerAdditionalExtensions } from "./feature-modules.ts";
 import { registerGoal } from "./goal.ts";
 import { registerNotesRecall } from "./notes-recall.ts";
 import { registerPlan } from "./plan.ts";
+import { registerCoordinationGroup } from "./coordination/index.ts";
 
 type ProgressStatus = "pending" | "in_progress" | "completed" | "blocked";
 type ProgressStep = { text: string; status: ProgressStatus };
@@ -44,6 +45,7 @@ export default Plugin.define({
   async setup(ctx) {
     const cleanup = await registerGoal(ctx);
     const cleanupAnalytics = await registerAnalytics(ctx);
+    const cleanupCoordination = await registerCoordinationGroup(ctx);
     await registerPlan(ctx);
     await registerNotesRecall(ctx);
     await registerAdditionalExtensions(ctx);
@@ -84,9 +86,10 @@ export default Plugin.define({
       });
     });
 
-    return () => {
+    return async () => {
       cleanup();
       cleanupAnalytics();
+      await cleanupCoordination();
     };
   },
 });
