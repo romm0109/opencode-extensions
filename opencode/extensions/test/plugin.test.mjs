@@ -54,8 +54,23 @@ function harness() {
 test("goal state and context are isolated per session", async () => {
   const app = harness();
   await plugin.setup(app.context);
-  for (const name of ["btw", "fleet", "herdr", "subagents"])
+  for (const name of [
+    "btw",
+    "fleet",
+    "herdr",
+    "subagents",
+    "provider-accounts",
+    "provider-usage",
+    "context-management",
+    "codex-compact",
+    "typesafe-compact",
+  ])
     assert.ok(app.commands.has(name), `server package entry registers /${name}`);
+  for (const name of ["subagent_spawn", "typesafe_question", "typesafe_search"])
+    assert.ok(
+      app.tools.some((tool) => tool.name === name),
+      `server package entry registers ${name}`,
+    );
   const goal = app.commands.get("goal");
   await goal.execute({ sessionID: "s1", prompt: { text: "/goal ship the feature" }, delivery: "steer" });
   assert.match(app.values.get("prompt/s1"), /ship the feature/);
@@ -163,7 +178,7 @@ test("plan context removes CodeMode and all non-allowlisted nested execution too
     system: [],
     messages: [],
     options: {},
-    tools: { read: {}, code_mode: {}, "plan_complete": {}, bash: {}, edit: {} },
+    tools: { read: {}, code_mode: {}, plan_complete: {}, bash: {}, edit: {} },
     model: {},
     agent: "plan",
   };

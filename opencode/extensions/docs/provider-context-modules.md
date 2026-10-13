@@ -1,6 +1,6 @@
 # Provider and context modules
 
-These modules are an isolated server-plugin group for the provider/context part of the upstream Pi conversion at `30ec29b06e3e09a205076683fcec4fdac39c504e`. They are intentionally not called from the main plugin registry or the CLI/TUI entrypoint on this branch. The only additional runtime requirement is Node's built-in `node:sqlite` with FTS5 (the project targets Node 24); there are no new npm dependencies.
+These modules are a server-plugin group for the provider/context part of the upstream Pi conversion at `30ec29b06e3e09a205076683fcec4fdac39c504e`. They use the host runtime's built-in SQLite module (`bun:sqlite` in the OpenCode CLI, `node:sqlite` in Node tests) with FTS5; there are no new npm dependencies.
 
 ## Features and boundaries
 
@@ -14,36 +14,9 @@ These modules are an isolated server-plugin group for the provider/context part 
 
 The options keys are read only when their corresponding tools are invoked. No TypeSafe or OpenRouter key is set, requested, copied, or validated by these tests. Semantic features have not been live-tested and can incur provider charges when a user later configures and invokes them.
 
-## Integration patch for the owner
+## Registration
 
-No root registry, package manifest, dependency list, or root extension entrypoint was changed. To register the group from `src/feature-modules.ts`, apply this patch after reviewing command-name collisions:
-
-```diff
- import type { PluginContext } from "./plugin-types.ts"
- import { registerFileContext } from "./file-context.ts"
- import { registerToolCatalog } from "./tool-catalog.ts"
- import { registerWorktreeCommands } from "./worktree.ts"
-+import { registerProviderContextExtensions } from "./provider-context/index.ts"
-
- /** Register file-context quoting, tool catalog inspection, and native worktree commands. */
--export async function registerAdditionalExtensions(context: PluginContext): Promise<void> {
-+export async function registerAdditionalExtensions(context: PluginContext): Promise<() => Promise<void>> {
-   await Promise.all([registerFileContext(context), registerToolCatalog(context), registerWorktreeCommands(context)])
-+  return registerProviderContextExtensions(context)
- }
-```
-
-Then propagate cleanup from `src/index.ts`:
-
-```diff
--    await registerAdditionalExtensions(ctx)
-+    const cleanupAdditional = await registerAdditionalExtensions(ctx)
-     await ctx.tool.transform(...)
--    return () => { cleanup(); cleanupAnalytics() }
-+    return async () => { await cleanupAdditional(); cleanup(); cleanupAnalytics() }
-```
-
-If the current owner branch already changed either setup shape, preserve its cleanup ordering and add the group registration in the equivalent location. There are no package dependency changes. The new commands are `/provider-accounts`, `/provider-usage`, `/context-management`, `/codex-compact`, and `/typesafe-compact`; tools are `typesafe_question` and `typesafe_search`. Keep this group opt-in until those names and any server-side data transfer policies are accepted.
+The server package registers this group through `registerAdditionalExtensions()` in `feature-modules.ts`; its usage-event stream is stopped during plugin cleanup. There are no package dependency changes. The commands are `/provider-accounts`, `/provider-usage`, `/context-management`, `/codex-compact`, and `/typesafe-compact`; tools are `typesafe_question` and `typesafe_search`. Network transfer occurs only when the user explicitly invokes a TypeSafe tool with the corresponding key/options configured.
 
 ## Verification
 

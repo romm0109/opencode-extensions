@@ -2,14 +2,14 @@
 
 ## Summary
 
-The optional OpenCode server-plugin group in `opencode/extensions/src/provider-context/` ports selected provider/context behavior from the pinned Pi source while keeping host-owned account, compaction, and session semantics in control. It is exported from its own module but is not registered by the main extension entrypoint on this branch.
+The OpenCode server plugin registers provider/context adapters from `opencode/extensions/src/provider-context/` while keeping host-owned account, compaction, and session semantics in control.
 
 ## Key behavior
 
 - Provider accounts are read-only because `@opencode/plugin` 2.0.28 exposes global credential activation but no plugin-visible account list or session-scoped activation.
 - Usage reporting aggregates bounded host token and cost events; it makes no provider-quota claims.
 - TypeSafe tools use semantic validation, fixed-origin requests, an opt-in OpenRouter fallback with no retry-based provider switching, explicit search reranking, and cancellation.
-- Search uses a throwaway FTS5 database and returns exact file line ranges without writing the project.
+- Search uses a throwaway FTS5 database (`bun:sqlite` in OpenCode, `node:sqlite` in Node tests) and returns exact file line ranges without writing the project.
 - Context rollover is disabled per session until enabled and then calls native compaction only by explicit command. Summary-free window hiding and branch-local recall/notes remain blocked because the public API does not expose verified branch-entry lineage.
 - Codex checkpoint replay and automated TypeSafe compaction remain disabled until their opaque provenance and cancellation requirements can be met through public host APIs.
 
@@ -20,7 +20,7 @@ The optional OpenCode server-plugin group in `opencode/extensions/src/provider-c
 - `opencode/extensions/src/provider-context/codex-provenance.ts` — exact-match checkpoint replay gate.
 - `opencode/extensions/src/provider-context/typesafe-compact.ts` — cancellable selection core, not wired to the native compaction hook.
 - `opencode/extensions/test/provider-context.test.mjs` — scripted host, validation, provenance, cancellation, and line-range tests.
-- `opencode/extensions/docs/provider-context-modules.md` — API boundaries and exact owner integration patch.
+- `opencode/extensions/docs/provider-context-modules.md` — API boundaries and registration details.
 
 ## Related
 

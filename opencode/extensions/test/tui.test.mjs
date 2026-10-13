@@ -323,7 +323,15 @@ test("package TUI entry composes the workflow and child-session affordances", as
     ["prompt.footer.status", "home.footer.status", "session.panel", "session.panel"],
   );
   const names = app.getLayers().flatMap((factory) => factory().commands.map((command) => command.slash.name));
-  assert.deepEqual(names, ["workflow", "cache-hit-monitor", "stamp", "tui-kit-showcase", "coordination", "fleet-open", "btw-bring"]);
+  assert.deepEqual(names, [
+    "workflow",
+    "cache-hit-monitor",
+    "stamp",
+    "tui-kit-showcase",
+    "coordination",
+    "fleet-open",
+    "btw-bring",
+  ]);
 });
 
 test("terminal control sequences are removed from user text", () => {
