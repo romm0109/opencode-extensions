@@ -1,0 +1,225 @@
+import { randomUUID } from "node:crypto";
+
+export type GoalStatus = "active" | "paused" | "waiting" | "blocked" | "usage_limited" | "budget_limited" | "complete";
+export interface GoalState {
+  id: string;
+  objective: string;
+  status: GoalStatus;
+  createdAt: number;
+  updatedAt: number;
+  automaticTurns: number;
+  automaticTurnLimit: number | null;
+  noProgressTurnLimit?: number | null;
+  activeSeconds?: number;
+  activeStartedAt?: number;
+  tokensUsed: number;
+  tokenBudget?: number;
+  baselineTokens?: number;
+  contractAnchor?: { text: string; afterMessageID?: string; empty: boolean };
+  waitingFor?: string;
+  resumeAt?: number;
+  summary?: string;
+  evidence?: string[];
+  lastError?: string;
+  usageEventIDs?: string[];
+  lifecycle: number;
+  noProgressTurns?: number;
+  lastOutputFingerprint?: string;
+  continuationCount?: number;
+}
+
+export type GoalCommand =
+  | { kind: "status" }
+  | { kind: "pause" }
+  | { kind: "resume" }
+  | { kind: "clear" }
+  | { kind: "start" | "edit"; objective: string; tokenBudget?: number };
+
+export function parseGoalCommand(raw: string): GoalCommand | { kind: "error"; message: string } {
+  const input = raw.trim().replace(/^\/goal(?:\s+)?/i, "");
+  if (!input) return { kind: "status" };
+  const [head, ...tail] = input.split(/\s+/);
+  const rest = tail.join(" ");
+  if (head === "status") return rest ? { kind: "error", message: "Usage: /goal status" } : { kind: "status" };
+  if (head === "pause") return rest ? { kind: "error", message: "Usage: /goal pause" } : { kind: "pause" };
+  if (head === "resume") return rest ? { kind: "error", message: "Usage: /goal resume" } : { kind: "resume" };
+  if (head === "clear" || head === "stop")
+    return rest ? { kind: "error", message: "Usage: /goal clear" } : { kind: "clear" };
+  let edit = false;
+  let objectiveInput = input;
+  if (head === "edit") {
+    edit = true;
+    objectiveInput = rest;
+  }
+  if (
+    head === "add" ||
+    head === "prioritize" ||
+    head === "drop-last" ||
+    head === "push" ||
+    head === "unshift" ||
+    head === "pop" ||
+    head === "shift"
+  ) {
+    return {
+      kind: "error",
+      message: `/${head} was removed from pi-goal. Run /goal status to inspect the active goal.`,
+    };
+  }
+  if (edit && !objectiveInput) return { kind: "error", message: "Usage: /goal edit <objective>" };
+  const match = /^--tokens\s+(\S+)\s+(.+)$/.exec(objectiveInput);
+  let tokenBudget: number | undefined;
+  if (match) {
+    const [, rawBudget, objective] = match;
+    if (!rawBudget || !objective) return { kind: "error", message: "Token budget requires an objective." };
+    tokenBudget = parseTokenBudget(rawBudget);
+    if (!tokenBudget) return { kind: "error", message: `Invalid token budget: ${rawBudget}` };
+    objectiveInput = objective;
+  }
+  if (objectiveInput.startsWith("--"))
+    return { kind: "error", message: "Usage: /goal [edit] [--tokens <positive-budget>] <objective>" };
+  const objective = objectiveInput.trim();
+  if (!objective || objective.length > 4000)
+    return { kind: "error", message: "A goal objective must contain 1–4,000 characters." };
+  return { kind: edit ? "edit" : "start", objective, tokenBudget };
+}
+
+export function parseTokenBudget(value: string): number | undefined {
+  const match = /^(\d+(?:\.\d+)?)([km])?$/i.exec(value.trim());
+  if (!match) return undefined;
+  const amount = Number(match[1]);
+  const result = Math.floor(
+    amount * (match[2]?.toLowerCase() === "m" ? 1_000_000 : match[2]?.toLowerCase() === "k" ? 1_000 : 1),
+  );
+  return Number.isSafeInteger(result) && result > 0 ? result : undefined;
+}
+
+export function startGoal(
+  objective: string,
+  options: {
+    id?: string;
+    now?: number;
+    tokenBudget?: number;
+    automaticTurnLimit?: number | null;
+    noProgressTurnLimit?: number | null;
+  } = {},
+): GoalState {
+  const now = options.now ?? Date.now();
+  return {
+    id: options.id ?? randomUUID(),
+    objective: objective.trim(),
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+    automaticTurns: 0,
+    automaticTurnLimit: options.automaticTurnLimit === undefined ? 25 : options.automaticTurnLimit,
+    noProgressTurnLimit: options.noProgressTurnLimit === undefined ? 3 : options.noProgressTurnLimit,
+    activeSeconds: 0,
+    activeStartedAt: now,
+    tokensUsed: 0,
+    lifecycle: 0,
+    ...(options.tokenBudget ? { tokenBudget: options.tokenBudget } : {}),
+  };
+}
+
+/** Older stored goals have no clock baseline; never infer elapsed time for them. */
+export function goalActiveSeconds(goal: GoalState, now = Date.now()): number {
+  const elapsed =
+    goal.status === "active" && goal.activeStartedAt !== undefined ? Math.max(0, now - goal.activeStartedAt) / 1000 : 0;
+  return (goal.activeSeconds ?? 0) + elapsed;
+}
+
+export function transitionGoal(
+  goal: GoalState,
+  status: GoalStatus,
+  details: Partial<Pick<GoalState, "waitingFor" | "resumeAt" | "summary" | "evidence" | "lastError">> = {},
+  now = Date.now(),
+): GoalState {
+  return {
+    ...goal,
+    ...details,
+    status,
+    lifecycle: goal.lifecycle + 1,
+    updatedAt: now,
+    activeSeconds: goalActiveSeconds(goal, now),
+    activeStartedAt: status === "active" ? now : undefined,
+  };
+}
+
+export function recordGoalUsage(goal: GoalState, tokens: number, now = Date.now()): GoalState {
+  const tokensUsed = Math.min(
+    Number.MAX_SAFE_INTEGER,
+    goal.tokensUsed + (Number.isFinite(tokens) ? Math.max(0, Math.floor(tokens)) : 0),
+  );
+  const automaticTurns = goal.automaticTurns + 1;
+  const status: GoalStatus =
+    goal.tokenBudget !== undefined && tokensUsed >= goal.tokenBudget
+      ? "budget_limited"
+      : goal.automaticTurnLimit !== null && automaticTurns >= goal.automaticTurnLimit
+        ? "paused"
+        : goal.status;
+  return {
+    ...goal,
+    tokensUsed,
+    automaticTurns,
+    status,
+    updatedAt: now,
+    activeSeconds: goalActiveSeconds(goal, now),
+    activeStartedAt: status === "active" ? now : undefined,
+  };
+}
+
+export function canResumeGoal(goal: GoalState): boolean {
+  if (!["paused", "blocked", "usage_limited", "budget_limited", "waiting"].includes(goal.status)) return false;
+  return goal.tokenBudget === undefined || goal.tokensUsed < goal.tokenBudget;
+}
+
+export function validGoalState(value: unknown): value is GoalState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Partial<GoalState>;
+  return (
+    typeof row.id === "string" &&
+    row.id.length > 0 &&
+    typeof row.objective === "string" &&
+    row.objective.trim().length > 0 &&
+    row.objective.length <= 4000 &&
+    ["active", "paused", "waiting", "blocked", "usage_limited", "budget_limited", "complete"].includes(
+      String(row.status),
+    ) &&
+    Number.isSafeInteger(row.createdAt) &&
+    Number.isSafeInteger(row.updatedAt) &&
+    Number.isSafeInteger(row.automaticTurns) &&
+    (row.automaticTurns ?? -1) >= 0 &&
+    (row.automaticTurnLimit === null ||
+      (Number.isSafeInteger(row.automaticTurnLimit) && (row.automaticTurnLimit ?? -1) > 0)) &&
+    (row.noProgressTurnLimit === undefined ||
+      row.noProgressTurnLimit === null ||
+      (Number.isSafeInteger(row.noProgressTurnLimit) && row.noProgressTurnLimit > 0)) &&
+    (row.activeSeconds === undefined || (Number.isFinite(row.activeSeconds) && row.activeSeconds >= 0)) &&
+    (row.activeStartedAt === undefined || (Number.isSafeInteger(row.activeStartedAt) && row.activeStartedAt >= 0)) &&
+    Number.isSafeInteger(row.tokensUsed) &&
+    (row.tokensUsed ?? -1) >= 0 &&
+    Number.isSafeInteger(row.lifecycle) &&
+    (row.lifecycle ?? -1) >= 0 &&
+    (row.tokenBudget === undefined || (Number.isSafeInteger(row.tokenBudget) && row.tokenBudget > 0)) &&
+    (row.resumeAt === undefined || (Number.isSafeInteger(row.resumeAt) && row.resumeAt >= 0)) &&
+    (row.baselineTokens === undefined || Number.isFinite(row.baselineTokens)) &&
+    (row.noProgressTurns === undefined || (Number.isSafeInteger(row.noProgressTurns) && row.noProgressTurns >= 0)) &&
+    (row.continuationCount === undefined ||
+      (Number.isSafeInteger(row.continuationCount) && row.continuationCount >= 0)) &&
+    (row.contractAnchor === undefined ||
+      (row.contractAnchor &&
+        typeof row.contractAnchor === "object" &&
+        typeof row.contractAnchor.text === "string" &&
+        typeof row.contractAnchor.empty === "boolean" &&
+        (row.contractAnchor.afterMessageID === undefined || typeof row.contractAnchor.afterMessageID === "string"))) &&
+    (row.usageEventIDs === undefined ||
+      (Array.isArray(row.usageEventIDs) && row.usageEventIDs.every((id) => typeof id === "string")))
+  );
+}
+
+export function renderGoalStatus(goal: GoalState, now = Date.now()): string {
+  const budget = goal.tokenBudget === undefined ? "no token budget" : `${goal.tokensUsed}/${goal.tokenBudget} tokens`;
+  const limit = goal.automaticTurnLimit === null ? "unlimited" : goal.automaticTurnLimit;
+  const elapsed = Math.floor(goalActiveSeconds(goal, now));
+  return `Goal ${goal.status} (${goal.automaticTurns}/${limit} automatic turns; ${budget}; ${elapsed}s active elapsed)\n${goal.objective}${goal.waitingFor ? `\nWaiting for: ${goal.waitingFor}` : ""}${goal.summary ? `\nSummary: ${goal.summary}` : ""}`;
+}
