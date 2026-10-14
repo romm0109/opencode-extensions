@@ -89,7 +89,7 @@ export function createCoordinationTui(dependencies: Dependencies = {}) {
         render: (input) => (input.name === PANEL ? (sessionRows(ctx, jsx, input.sessionID) as never) : (null as never)),
       });
       ctx.keymap.layer(() => ({
-        mode: "base",
+        mode: "global",
         commands: [
           {
             id: "romm0109.coordination.panel",

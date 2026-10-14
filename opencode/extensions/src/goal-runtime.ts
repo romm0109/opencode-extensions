@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
 import type { PluginContext } from "./plugin-types.ts";
 import { workflowTransition } from "./workflow-lock.ts";
-import { type GoalState, type GoalStatus, recordGoalUsage, transitionGoal, validGoalState } from "./workflow-state.ts";
+import {
+  type GoalState,
+  type GoalStatus,
+  goalActiveSeconds,
+  recordGoalUsage,
+  transitionGoal,
+  validGoalState,
+} from "./workflow-state.ts";
 
 export const goalKey = (sessionID: string) => `workflow/goal/${sessionID}`;
 export const sameGoal = (a: GoalState | undefined, b: GoalState) => a?.id === b.id && a.lifecycle === b.lifecycle;
@@ -20,6 +27,8 @@ type Ticket = { goal: GoalState; ended: boolean; text: Map<number, string>; tool
 type Pending = { controller: AbortController; goal: GoalState };
 export function createGoalRuntime(ctx: PluginContext) {
   const stream = new AbortController();
+  const known = new Set<string>();
+  let eventTask: Promise<void> | undefined;
   const writes = new Map<string, Promise<unknown>>();
   const pending = new Map<string, Pending>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -46,6 +55,11 @@ export function createGoalRuntime(ctx: PluginContext) {
         ...goal,
         baselineTokens: goal.baselineTokens ?? total - goal.tokensUsed,
         tokensUsed,
+        activeSeconds: goalActiveSeconds(goal),
+        activeStartedAt:
+          goal.status === "active" && !(goal.tokenBudget !== undefined && tokensUsed >= goal.tokenBudget)
+            ? Date.now()
+            : undefined,
         status: goal.tokenBudget !== undefined && tokensUsed >= goal.tokenBudget ? "budget_limited" : goal.status,
       };
     });
@@ -60,6 +74,7 @@ export function createGoalRuntime(ctx: PluginContext) {
     timers.delete(id);
   };
   const read = async (id: string): Promise<GoalState | undefined> => {
+    known.add(id);
     await writes.get(id);
     const value = await ctx.storage.get(goalKey(id));
     if (value !== undefined && !validGoalState(value))
@@ -67,6 +82,7 @@ export function createGoalRuntime(ctx: PluginContext) {
     return value as GoalState | undefined;
   };
   const mutate = (id: string, update: (goal: GoalState | undefined) => GoalState | undefined) => {
+    known.add(id);
     const operation = (writes.get(id) ?? Promise.resolve())
       .catch(() => undefined)
       .then(async () => {
@@ -220,6 +236,7 @@ export function createGoalRuntime(ctx: PluginContext) {
             )
               updated.status = "budget_limited";
             if (current.status !== "active") updated.status = current.status;
+            if (updated.status !== "active") updated.activeStartedAt = undefined;
             updated.usageEventIDs = [...seen.slice(-199), event.data.assistantMessageID];
             const normalized = [...ticket.text.entries()]
               .sort(([a], [b]) => a - b)
@@ -240,9 +257,13 @@ export function createGoalRuntime(ctx: PluginContext) {
                   ? (current.noProgressTurns ?? 0) + 1
                   : 1;
             updated.lastOutputFingerprint = fingerprint;
-            if ((updated.noProgressTurns ?? 0) >= 3 && updated.status === "active")
+            if (
+              updated.noProgressTurnLimit !== null &&
+              (updated.noProgressTurns ?? 0) >= (updated.noProgressTurnLimit ?? 3) &&
+              updated.status === "active"
+            )
               return transitionGoal(updated, "paused", {
-                lastError: "Three repeated tool-free responses without progress.",
+                lastError: "Repeated tool-free responses reached the configured no-progress limit.",
               });
             return updated;
           });
@@ -254,7 +275,20 @@ export function createGoalRuntime(ctx: PluginContext) {
           tickets.delete(id);
           if (goal?.status === "active") schedule(id, goal);
         } else if (event.type === "session.execution.failed" || event.type === "session.execution.interrupted") {
-          const owned = completed.get(id) ?? [...(tickets.get(id)?.values() ?? [])].at(-1)?.goal;
+          const eligible = (snapshots.get(id) ?? []).filter((snapshot) => snapshot.at <= event.created);
+          const latestSnapshot = eligible.at(-1);
+          const ambiguous =
+            latestSnapshot &&
+            eligible.some(
+              (snapshot) =>
+                snapshot.at === latestSnapshot.at &&
+                (snapshot.goal?.id !== latestSnapshot.goal?.id ||
+                  snapshot.goal?.lifecycle !== latestSnapshot.goal?.lifecycle),
+            );
+          const owned =
+            completed.get(id) ??
+            [...(tickets.get(id)?.values() ?? [])].at(-1)?.goal ??
+            (ambiguous ? undefined : latestSnapshot?.goal);
           const matches = owned && sameGoal(await read(id), owned);
           if (matches) {
             await reconcile(id);
@@ -262,24 +296,32 @@ export function createGoalRuntime(ctx: PluginContext) {
           }
           completed.delete(id);
           tickets.delete(id);
+          const failureStatus: GoalStatus =
+            event.type !== "session.execution.failed"
+              ? "paused"
+              : /(?:insufficient|exhausted).*(?:quota|credit)|billing|subscription|payment.required/i.test(
+                    event.data.error.message,
+                  )
+                ? "usage_limited"
+                : event.data.error.status === 429 ||
+                    event.data.error.status === 408 ||
+                    (event.data.error.status ?? 0) >= 500 ||
+                    /network|timeout|timed.out|temporar|connection.reset|unavailable/i.test(event.data.error.message)
+                  ? "waiting"
+                  : "blocked";
           await mutate(id, (goal) =>
             owned && sameGoal(goal, owned) && goal?.status === "active"
-              ? transitionGoal(
-                  goal,
-                  event.type === "session.execution.failed"
-                    ? /(?:insufficient|exhausted).*(?:quota|credit)|billing|subscription|payment.required/i.test(
-                        event.data.error.message,
-                      )
-                      ? "usage_limited"
-                      : "blocked"
-                    : "paused",
-                  {
-                    lastError:
-                      event.type === "session.execution.failed"
-                        ? event.data.error.message
-                        : "Host execution interrupted.",
-                  },
-                )
+              ? transitionGoal(goal, failureStatus, {
+                  waitingFor:
+                    failureStatus === "waiting"
+                      ? "Provider recovery after native retries were exhausted; resume on external input or /goal resume."
+                      : undefined,
+                  resumeAt: undefined,
+                  lastError:
+                    event.type === "session.execution.failed"
+                      ? event.data.error.message
+                      : "Host execution interrupted.",
+                })
               : goal,
           );
           const waiting = await read(id);
@@ -334,14 +376,20 @@ export function createGoalRuntime(ctx: PluginContext) {
       return next;
     },
     async start() {
-      void consume().catch((error) => {
+      eventTask = consume().catch((error) => {
         if (!stream.signal.aborted) console.error("Goal event stream failed", error);
       });
       let after: string | undefined;
       do {
         const page = await ctx.storage.scan({ prefix: "workflow/goal/", after, limit: 100 });
         for (const entry of page.entries)
-          if (validGoalState(entry.value)) arm(entry.key.slice("workflow/goal/".length), entry.value);
+          if (validGoalState(entry.value)) {
+            const id = entry.key.slice("workflow/goal/".length);
+            known.add(id);
+            if (entry.value.status === "active")
+              await mutate(id, (goal) => (goal ? { ...goal, activeStartedAt: Date.now() } : goal));
+            arm(id, entry.value);
+          }
         after = page.next;
       } while (after && !stream.signal.aborted);
     },
@@ -375,13 +423,24 @@ export function createGoalRuntime(ctx: PluginContext) {
       if (signal.aborted || stream.signal.aborted) throw new Error("Goal tool cancelled.");
       return goal;
     },
-    close() {
+    async close() {
       stream.abort();
       for (const id of new Set([...pending.keys(), ...timers.keys()])) invalidate(id);
       tickets.clear();
       completed.clear();
       snapshots.clear();
       notify();
+      await eventTask;
+      for (const id of known) {
+        const stored = await ctx.storage.get(goalKey(id));
+        if (validGoalState(stored) && stored.status === "active")
+          await mutate(id, (goal) =>
+            goal?.status === "active"
+              ? { ...goal, activeSeconds: goalActiveSeconds(goal), activeStartedAt: undefined }
+              : goal,
+          );
+      }
+      known.clear();
     },
   };
 }

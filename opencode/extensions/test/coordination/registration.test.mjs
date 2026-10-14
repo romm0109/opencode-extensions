@@ -103,6 +103,7 @@ test("TUI module exposes native child panel, tab open, and explicit bring-back c
   assert.equal(slots.length, 1);
   const panel = slots[0].render({ name: "romm0109-coordination", sessionID: "parent" });
   assert.equal(panel.type, "box");
+  assert.equal(keymap.mode, "global", "slash discovery remains active in autocomplete mode");
   const commands = new Map(keymap.commands.map((entry) => [entry.id, entry]));
   commands.get("romm0109.coordination.open").run("child");
   assert.deepEqual(opened, ["child"]);

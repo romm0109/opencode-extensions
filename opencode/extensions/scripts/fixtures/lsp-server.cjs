@@ -1,8 +1,28 @@
 let pending = Buffer.alloc(0);
 let configurationCount = -1;
+let configurationReceived = false;
+const diagnosticRequests = [];
 function send(value) {
   const text = JSON.stringify(value);
   process.stdout.write(`Content-Length: ${Buffer.byteLength(text)}\r\n\r\n${text}`);
+}
+function sendDiagnostics(id) {
+  send({
+    jsonrpc: "2.0",
+    id,
+    result: {
+      kind: "full",
+      items: [
+        {
+          range: { start: { line: 0, character: 1 }, end: { line: 0, character: 2 } },
+          severity: 2,
+          code: `fixture-${configurationCount}`,
+          message: "Fixture warning",
+          source: "fixture-lsp",
+        },
+      ],
+    },
+  });
 }
 process.stdin.on("data", (chunk) => {
   pending = Buffer.concat([pending, chunk]);
@@ -29,6 +49,8 @@ process.stdin.on("data", (chunk) => {
     }
     if (message.id === 101 && !message.method) {
       configurationCount = Array.isArray(message.result) ? message.result.length : -1;
+      configurationReceived = true;
+      for (const id of diagnosticRequests.splice(0)) sendDiagnostics(id);
       continue;
     }
     if (message.id === undefined) continue;
@@ -40,19 +62,13 @@ process.stdin.on("data", (chunk) => {
           codeActionProvider: true,
         },
       };
-    if (message.method === "textDocument/diagnostic")
-      result = {
-        kind: "full",
-        items: [
-          {
-            range: { start: { line: 0, character: 1 }, end: { line: 0, character: 2 } },
-            severity: 2,
-            code: `fixture-${configurationCount}`,
-            message: "Fixture warning",
-            source: "fixture-lsp",
-          },
-        ],
-      };
+    if (message.method === "textDocument/diagnostic") {
+      // The client may pipeline diagnostics before replying to our configuration request.
+      // Report the observed reply only after it arrives, independent of pipe scheduling.
+      if (configurationReceived) sendDiagnostics(message.id);
+      else diagnosticRequests.push(message.id);
+      continue;
+    }
     if (message.method === "textDocument/codeAction") {
       const uri = message.params.textDocument.uri;
       result = [

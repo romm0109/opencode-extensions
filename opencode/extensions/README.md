@@ -19,7 +19,7 @@ Or copy the directory to `.opencode/plugins/romm0109-workflow/`. The plugin uses
 
 ## Current server commands and tools
 
-- `/goal [--tokens <budget>] <objective>` starts one session goal; `/goal edit [--tokens <budget>] <objective>`, `pause`, `resume`, `status`, and `clear` (`stop`) manage it. An incomplete Goal automatically continues only after native settled idle. `goal_complete` requires the current Goal ID and evidence; `goal_blocked` requires three Goal responses and an evidenced recurring external impasse. `goal_wait` suspends continuation until external input, explicit resume, or an optional persisted safety deadline (minimum ten seconds). Default safety limits pause after 25 responses or three repeated tool-free outputs. Goal and Plan cannot own the same session simultaneously. See [Goal behavior and verification](./docs/goal.md) for budget semantics and remaining differences.
+- `/goal [--tokens <budget>] <objective>` starts one session goal; `/goal edit [--tokens <budget>] <objective>`, `pause`, `resume`, `status`, and `clear` (`stop`) manage it. An incomplete Goal automatically continues only after native settled idle. `goal_complete` requires the current Goal ID and evidence; `goal_blocked` requires three Goal responses and an evidenced recurring external impasse. `goal_wait` suspends continuation until external input, explicit resume, or an optional persisted safety deadline (minimum ten seconds). Default safety limits pause after 25 responses or three repeated tool-free outputs. Goal and Plan cannot own the same session simultaneously. `/goal-manager` offers native lifecycle actions, status with active elapsed time, and persistent configurable safety limits. See [Goal behavior and verification](./docs/goal.md) for budget semantics and remaining differences.
 - `/plan <task>` switches to OpenCode's Plan agent and starts read-only planning. `plan_complete` stores a plan for review, followed by explicit `/plan approve` and `/plan implement`. Matching mutation tools are removed from planning context and matching permission actions are denied. Source allowlists, unsafe shell parsing, settings, export/save, and fresh-session handoff are not implemented.
 - `update_progress` replaces a bounded checklist with at most 50 rows, 503 grapheme clusters per row, and at most one `in_progress` row. An empty list clears progress. The TUI reconstructs state from the active transcript branch; stale storage snapshots are not injected into model context.
 - `/notes`, `/recall`, and `notes_*` / `recall_*` tools provide local storage CRUD and search. Recall quotes are marked but cannot be inserted at the editor cursor; notes are plugin storage records rather than Markdown files.
@@ -30,13 +30,7 @@ Goal starts/resumes, automatic continuations and safety wakes, and Plan starts/r
 
 ## Terminal UI entry
 
-OpenCode loads CLI-only TUI plugins from `cli.json`, separately from server plugins in `opencode.jsonc`. Add the package export or local file path to the CLI plugin list using the [OpenCode v2 plugin configuration](https://opencode.ai/v2/docs/plugins/#terminal):
-
-```json
-{
-  "plugins": ["/absolute/path/to/opencode-extensions/opencode/extensions/tui.js"]
-}
-```
+The package-directory entry in `opencode.jsonc` above loads both the server plugin and its paired root `tui.js` in OpenCode 2.0.28. No duplicate CLI plugin entry is needed. The paired-directory route is verified with the real native terminal host; do not substitute a standalone `tui.js` path for the package directory.
 
 The TUI plugin replaces the prompt footer with one selected presentation: a native statusline or a Starship-style footer. `/footer-mode statusline|starship|off` switches modes; `/statusline` opens its profile picker and `/statusline-preset minimal|balanced|verbose` selects a profile directly; `/starship-preset <name>` applies one of the 13 upstream Pi Starship templates; `/starship-template` accepts custom TOML with a format, module tables, and palettes. These choices persist in OpenCode plugin storage. Supported custom module fields are `format`, `symbol`, `style`, and `disabled`; other module fields are retained but ignored by this renderer. The Starship renderer uses host-reported session/model/token/cost/VCS data, fits each line to terminal cell width, and does not start a shell or Starship process. Modules without a corresponding public CLI data source render empty.
 

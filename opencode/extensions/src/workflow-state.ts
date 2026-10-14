@@ -8,7 +8,10 @@ export interface GoalState {
   createdAt: number;
   updatedAt: number;
   automaticTurns: number;
-  automaticTurnLimit: number;
+  automaticTurnLimit: number | null;
+  noProgressTurnLimit?: number | null;
+  activeSeconds?: number;
+  activeStartedAt?: number;
   tokensUsed: number;
   tokenBudget?: number;
   baselineTokens?: number;
@@ -92,7 +95,13 @@ export function parseTokenBudget(value: string): number | undefined {
 
 export function startGoal(
   objective: string,
-  options: { id?: string; now?: number; tokenBudget?: number; automaticTurnLimit?: number } = {},
+  options: {
+    id?: string;
+    now?: number;
+    tokenBudget?: number;
+    automaticTurnLimit?: number | null;
+    noProgressTurnLimit?: number | null;
+  } = {},
 ): GoalState {
   const now = options.now ?? Date.now();
   return {
@@ -102,11 +111,21 @@ export function startGoal(
     createdAt: now,
     updatedAt: now,
     automaticTurns: 0,
-    automaticTurnLimit: options.automaticTurnLimit ?? 25,
+    automaticTurnLimit: options.automaticTurnLimit === undefined ? 25 : options.automaticTurnLimit,
+    noProgressTurnLimit: options.noProgressTurnLimit === undefined ? 3 : options.noProgressTurnLimit,
+    activeSeconds: 0,
+    activeStartedAt: now,
     tokensUsed: 0,
     lifecycle: 0,
     ...(options.tokenBudget ? { tokenBudget: options.tokenBudget } : {}),
   };
+}
+
+/** Older stored goals have no clock baseline; never infer elapsed time for them. */
+export function goalActiveSeconds(goal: GoalState, now = Date.now()): number {
+  const elapsed =
+    goal.status === "active" && goal.activeStartedAt !== undefined ? Math.max(0, now - goal.activeStartedAt) / 1000 : 0;
+  return (goal.activeSeconds ?? 0) + elapsed;
 }
 
 export function transitionGoal(
@@ -115,7 +134,15 @@ export function transitionGoal(
   details: Partial<Pick<GoalState, "waitingFor" | "resumeAt" | "summary" | "evidence" | "lastError">> = {},
   now = Date.now(),
 ): GoalState {
-  return { ...goal, ...details, status, lifecycle: goal.lifecycle + 1, updatedAt: now };
+  return {
+    ...goal,
+    ...details,
+    status,
+    lifecycle: goal.lifecycle + 1,
+    updatedAt: now,
+    activeSeconds: goalActiveSeconds(goal, now),
+    activeStartedAt: status === "active" ? now : undefined,
+  };
 }
 
 export function recordGoalUsage(goal: GoalState, tokens: number, now = Date.now()): GoalState {
@@ -127,10 +154,18 @@ export function recordGoalUsage(goal: GoalState, tokens: number, now = Date.now(
   const status: GoalStatus =
     goal.tokenBudget !== undefined && tokensUsed >= goal.tokenBudget
       ? "budget_limited"
-      : automaticTurns >= goal.automaticTurnLimit
+      : goal.automaticTurnLimit !== null && automaticTurns >= goal.automaticTurnLimit
         ? "paused"
         : goal.status;
-  return { ...goal, tokensUsed, automaticTurns, status, updatedAt: now };
+  return {
+    ...goal,
+    tokensUsed,
+    automaticTurns,
+    status,
+    updatedAt: now,
+    activeSeconds: goalActiveSeconds(goal, now),
+    activeStartedAt: status === "active" ? now : undefined,
+  };
 }
 
 export function canResumeGoal(goal: GoalState): boolean {
@@ -139,7 +174,7 @@ export function canResumeGoal(goal: GoalState): boolean {
 }
 
 export function validGoalState(value: unknown): value is GoalState {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Partial<GoalState>;
   return (
     typeof row.id === "string" &&
@@ -154,8 +189,13 @@ export function validGoalState(value: unknown): value is GoalState {
     Number.isSafeInteger(row.updatedAt) &&
     Number.isSafeInteger(row.automaticTurns) &&
     (row.automaticTurns ?? -1) >= 0 &&
-    Number.isSafeInteger(row.automaticTurnLimit) &&
-    (row.automaticTurnLimit ?? -1) > 0 &&
+    (row.automaticTurnLimit === null ||
+      (Number.isSafeInteger(row.automaticTurnLimit) && (row.automaticTurnLimit ?? -1) > 0)) &&
+    (row.noProgressTurnLimit === undefined ||
+      row.noProgressTurnLimit === null ||
+      (Number.isSafeInteger(row.noProgressTurnLimit) && row.noProgressTurnLimit > 0)) &&
+    (row.activeSeconds === undefined || (Number.isFinite(row.activeSeconds) && row.activeSeconds >= 0)) &&
+    (row.activeStartedAt === undefined || (Number.isSafeInteger(row.activeStartedAt) && row.activeStartedAt >= 0)) &&
     Number.isSafeInteger(row.tokensUsed) &&
     (row.tokensUsed ?? -1) >= 0 &&
     Number.isSafeInteger(row.lifecycle) &&
@@ -177,7 +217,9 @@ export function validGoalState(value: unknown): value is GoalState {
   );
 }
 
-export function renderGoalStatus(goal: GoalState): string {
+export function renderGoalStatus(goal: GoalState, now = Date.now()): string {
   const budget = goal.tokenBudget === undefined ? "no token budget" : `${goal.tokensUsed}/${goal.tokenBudget} tokens`;
-  return `Goal ${goal.status} (${goal.automaticTurns}/${goal.automaticTurnLimit} automatic turns; ${budget})\n${goal.objective}${goal.waitingFor ? `\nWaiting for: ${goal.waitingFor}` : ""}${goal.summary ? `\nSummary: ${goal.summary}` : ""}`;
+  const limit = goal.automaticTurnLimit === null ? "unlimited" : goal.automaticTurnLimit;
+  const elapsed = Math.floor(goalActiveSeconds(goal, now));
+  return `Goal ${goal.status} (${goal.automaticTurns}/${limit} automatic turns; ${budget}; ${elapsed}s active elapsed)\n${goal.objective}${goal.waitingFor ? `\nWaiting for: ${goal.waitingFor}` : ""}${goal.summary ? `\nSummary: ${goal.summary}` : ""}`;
 }

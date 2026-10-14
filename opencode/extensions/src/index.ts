@@ -87,7 +87,7 @@ export default Plugin.define({
     });
 
     return async () => {
-      cleanup();
+      await cleanup();
       cleanupAnalytics();
       await cleanupAdditional();
       await cleanupCoordination();

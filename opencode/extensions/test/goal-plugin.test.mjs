@@ -12,12 +12,19 @@ function harness() {
   const commands = new Map();
   const tools = new Map();
   const hooks = new Map();
+  const rpc = new Map();
   let wake;
   let seq = 0;
   let idle = Promise.resolve();
   let nativeTokens = 0;
   const calls = { prompt: [], synthetic: [], interrupt: [], wait: [] };
   const ctx = {
+    rpc: {
+      register: async (definition, handlers) => {
+        rpc.set(definition.id, handlers);
+        return { dispose: async () => {} };
+      },
+    },
     storage: {
       get: async (key) => structuredClone(values.get(key)),
       set: async (key, value) => values.set(key, structuredClone(value)),
@@ -78,6 +85,7 @@ function harness() {
     tools,
     calls,
     hooks,
+    rpc,
     emit,
     goal: () => values.get("workflow/goal/s1"),
     command: (text) => commands.get("goal").execute({ sessionID: "s1", prompt: { text } }),
@@ -122,7 +130,7 @@ test("informational commands never wake the model; removed queue verbs remain er
   await app.command("/goal clear");
   assert.equal(app.calls.prompt.length, 0);
   assert(app.calls.synthetic.every((call) => call.resume === false));
-  close();
+  await close();
 });
 
 test("pause/resume preserves objective and lifetime budget but resets the safety epoch", async () => {
@@ -138,7 +146,7 @@ test("pause/resume preserves objective and lifetime budget but resets the safety
   assert.equal(app.goal().tokensUsed, 12);
   await app.context();
   assert.equal(app.goal().baselineTokens, 30);
-  close();
+  await close();
 });
 
 test("helper tools require response ownership, exact active ID and evidence", async () => {
@@ -160,7 +168,7 @@ test("helper tools require response ownership, exact active ID and evidence", as
     app.execution(id),
   );
   assert.equal(app.goal().status, "complete");
-  close();
+  await close();
 });
 
 test("primary context caps output while auxiliary generation has no Goal hook", async () => {
@@ -173,7 +181,7 @@ test("primary context caps output while auxiliary generation has no Goal hook", 
   context.options.maxTokens = 3;
   await app.hooks.get("context")(context);
   assert.equal(context.options.maxTokens, 3);
-  close();
+  await close();
 });
 
 test("committed native usage enforces budgets before subscriber processing", async () => {
@@ -186,7 +194,7 @@ test("committed native usage enforces budgets before subscriber processing", asy
   assert.equal(app.goal().tokensUsed, 12);
   assert.equal(app.goal().status, "budget_limited");
   assert.equal(app.calls.interrupt.length, 1);
-  close();
+  await close();
 });
 
 test("step accounting includes cache tokens exactly once with duplicate ends", async () => {
@@ -205,7 +213,7 @@ test("step accounting includes cache tokens exactly once with duplicate ends", a
   });
   await flush();
   assert.equal(app.goal().automaticTurns, 1);
-  close();
+  await close();
 });
 
 test("automatic continuation waits for settled idle and queues once", async () => {
@@ -224,7 +232,7 @@ test("automatic continuation waits for settled idle and queues once", async () =
   await flush();
   assert.equal(app.calls.prompt.length, 2);
   assert.equal(app.calls.prompt.at(-1).delivery, "queue");
-  close();
+  await close();
 });
 
 test("new user input cancels old pending continuation without replacing objective", async () => {
@@ -241,7 +249,7 @@ test("new user input cancels old pending continuation without replacing objectiv
   await flush();
   assert.equal(app.calls.prompt.length, 1);
   assert.equal(app.goal().automaticTurns, 0);
-  close();
+  await close();
 });
 
 test("clear and replacement prevent old usage and automatic submissions", async () => {
@@ -260,7 +268,7 @@ test("clear and replacement prevent old usage and automatic submissions", async 
   assert.equal(app.goal().objective, "replacement");
   assert.equal(app.goal().tokensUsed, 0);
   assert.equal(app.calls.prompt.length, 2);
-  close();
+  await close();
 });
 
 test("cleanup never waits for native idle and prevents later submissions", async () => {
@@ -272,8 +280,8 @@ test("cleanup never waits for native idle and prevents later submissions", async
   app.end(id);
   app.emit("session.execution.succeeded");
   await flush();
-  close();
-  close();
+  await close();
+  await close();
   release();
   await flush();
   assert.equal(app.calls.prompt.length, 1);
@@ -291,7 +299,7 @@ test("three repeated tool-free outputs pause instead of looping", async () => {
   }
   assert.equal(app.goal().status, "paused");
   assert.equal(app.calls.prompt.length, 3);
-  close();
+  await close();
 });
 
 test("waiting retains Goal ownership and clamps safety wakes to ten seconds", async () => {
@@ -312,8 +320,8 @@ test("waiting retains Goal ownership and clamps safety wakes to ten seconds", as
   app.values.set("workflow/goal/s1", separate.goal());
   await app.commands.get("plan").execute({ sessionID: "s1", prompt: { text: "/plan new task" } });
   assert.match(app.calls.synthetic.at(-1).text, /Goal owns/);
-  cleanup();
-  close();
+  await cleanup();
+  await close();
 });
 
 test("blocked requires three actual Goal responses and fresh evidence", async () => {
@@ -330,7 +338,7 @@ test("blocked requires three actual Goal responses and fresh evidence", async ()
       ),
     /three Goal responses/,
   );
-  close();
+  await close();
 });
 
 test("Plan and Goal concurrent starts are serialized", async () => {
@@ -343,7 +351,7 @@ test("Plan and Goal concurrent starts are serialized", async () => {
   ]);
   assert.equal(app.goal().status, "active");
   assert.equal(app.values.has("workflow/plan/s1"), false);
-  close();
+  await close();
 });
 
 test("malformed stored state is protected from ordinary writes", async () => {
@@ -352,7 +360,7 @@ test("malformed stored state is protected from ordinary writes", async () => {
   app.values.set("workflow/goal/s1", { newerVersion: true });
   await assert.rejects(app.command("/goal work"), /invalid/);
   assert.deepEqual(app.values.get("workflow/goal/s1"), { newerVersion: true });
-  close();
+  await close();
 });
 
 test("late step from old primary snapshot cannot charge or complete an edited Goal", async () => {
@@ -371,7 +379,7 @@ test("late step from old primary snapshot cannot charge or complete an edited Go
       .execute({ goal_id: oldID, summary: "Verified", evidence: ["old evidence"] }, app.execution(id)),
     /does not own/,
   );
-  close();
+  await close();
 });
 
 test("genuine tool waits for delayed event subscription ownership", async () => {
@@ -387,7 +395,7 @@ test("genuine tool waits for delayed event subscription ownership", async () => 
   app.emit("session.step.started", { assistantMessageID: "delayed", started: Date.now() });
   await result;
   assert.equal(app.goal().status, "complete");
-  close();
+  await close();
 });
 
 test("native retry duplicate starts consume one response and no auxiliary tickets", async () => {
@@ -402,13 +410,14 @@ test("native retry duplicate starts consume one response and no auxiliary ticket
   await flush();
   assert.equal(app.goal().automaticTurns, 1);
   assert.equal(app.calls.prompt.length, 2);
-  close();
+  await close();
 });
 
 test("quota and ordinary exhausted failures have distinct states, no synthetic retries", async () => {
   for (const [message, status] of [
     ["insufficient quota credits", "usage_limited"],
-    ["Network request failed after native retries", "blocked"],
+    ["Network request failed after native retries", "waiting"],
+    ["Invalid provider request", "blocked"],
   ]) {
     const app = harness();
     const close = await registerGoal(app.ctx);
@@ -418,7 +427,7 @@ test("quota and ordinary exhausted failures have distinct states, no synthetic r
     await flush();
     assert.equal(app.goal().status, status);
     assert.equal(app.calls.prompt.length, 1);
-    close();
+    await close();
   }
 });
 
@@ -431,7 +440,7 @@ test("restored deadline waits until idle, then resumes once", async (t) => {
   await app.tools
     .get("goal_wait")
     .execute({ goal_id: app.goal().id, reason: "CI completes", resume_after_ms: 10_000 }, app.execution(id));
-  close();
+  await close();
   const release = app.holdIdle();
   close = await registerGoal(app.ctx);
   t.mock.timers.tick(10_000);
@@ -442,7 +451,7 @@ test("restored deadline waits until idle, then resumes once", async (t) => {
   await flush();
   assert.equal(app.goal().status, "active");
   assert.equal(app.calls.prompt.length, 2);
-  close();
+  await close();
 });
 
 test("external input cancels deadline and resumes without an extra automatic wake", async (t) => {
@@ -459,7 +468,7 @@ test("external input cancels deadline and resumes without an extra automatic wak
   await flush();
   assert.equal(app.goal().status, "active");
   assert.equal(app.calls.prompt.length, 1);
-  close();
+  await close();
 });
 
 test("failed response usage remains charged across explicit resume", async () => {
@@ -474,7 +483,7 @@ test("failed response usage remains charged across explicit resume", async () =>
   await app.command("/goal resume");
   await app.context();
   assert.equal(app.goal().tokensUsed, 17);
-  close();
+  await close();
 });
 
 test("failed prompt delivery pauses the same Goal rather than claiming active work", async () => {
@@ -486,7 +495,7 @@ test("failed prompt delivery pauses the same Goal rather than claiming active wo
   await assert.rejects(app.command("/goal work"), /admission failed/);
   assert.equal(app.goal().status, "paused");
   assert.match(app.goal().lastError, /delivery failed/);
-  close();
+  await close();
 });
 
 test("restored contract stays at its retained-history boundary on later requests", async () => {
@@ -506,5 +515,96 @@ test("restored contract stays at its retained-history boundary on later requests
   await app.hooks.get("context")(second);
   assert.deepEqual(second.messages.slice(0, 2), first.messages);
   assert.equal(second.system.length, 0);
-  close();
+  await close();
+});
+
+test("ordinary user instructions invalidate earlier helper ownership", async () => {
+  const app = harness();
+  const close = await registerGoal(app.ctx);
+  await app.command("/goal verify");
+  const id = await app.step("old-response");
+  const before = app.goal().lifecycle;
+  await app.hooks.get("prompt")({ sessionID: "s1", prompt: { text: "New instructions" } });
+  assert.ok(app.goal().lifecycle > before);
+  await assert.rejects(
+    () =>
+      app.tools
+        .get("goal_complete")
+        .execute({ goal_id: app.goal().id, summary: "done", evidence: ["checked"] }, app.execution(id)),
+    /own|goal/i,
+  );
+  await close();
+});
+
+test("interrupt before first provider output pauses the current context owner", async () => {
+  const app = harness();
+  const close = await registerGoal(app.ctx);
+  await app.command("/goal verify");
+  await app.context();
+  app.emit("session.execution.interrupted");
+  await flush();
+  assert.equal(app.goal().status, "paused");
+  await close();
+});
+
+test("exhausted transient provider errors wait without a polling deadline", async () => {
+  const app = harness();
+  const close = await registerGoal(app.ctx);
+  await app.command("/goal verify");
+  await app.step();
+  app.emit("session.execution.failed", { error: { message: "Service unavailable", status: 503 } });
+  await flush();
+  assert.equal(app.goal().status, "waiting");
+  assert.equal(app.goal().resumeAt, undefined);
+  assert.equal(app.calls.prompt.length, 1);
+  await close();
+});
+
+test("settings limits apply to start and explicit resume; null disables both safety stops", async () => {
+  const app = harness();
+  const close = await registerGoal(app.ctx);
+  const settings = app.rpc.get("romm0109.goal");
+  await settings.configure(
+    { sessionID: "s1", automaticTurns: 2, noProgressTurns: null },
+    { signal: new AbortController().signal },
+  );
+  await app.command("/goal verify");
+  assert.equal(app.goal().automaticTurnLimit, 2);
+  for (let n = 0; n < 2; n++) {
+    const id = await app.step(`limited-${n}`);
+    app.end(id, "same");
+    await flush();
+  }
+  assert.equal(app.goal().status, "paused");
+  await settings.configure(
+    { sessionID: "s1", automaticTurns: null, noProgressTurns: null },
+    { signal: new AbortController().signal },
+  );
+  await app.command("/goal resume");
+  for (let n = 0; n < 4; n++) {
+    const id = await app.step(`unlimited-${n}`);
+    app.end(id, "same");
+    await flush();
+  }
+  assert.equal(app.goal().status, "active");
+  await close();
+});
+
+test("active elapsed clock checkpoints on unload and restarts without unloaded time", async () => {
+  const app = harness();
+  let close = await registerGoal(app.ctx);
+  await app.command("/goal verify");
+  app.values.set("workflow/goal/s1", { ...app.goal(), activeSeconds: 2, activeStartedAt: Date.now() - 1000 });
+  await close();
+  const stored = app.goal();
+  assert.ok(stored.activeSeconds >= 3);
+  assert.equal(stored.activeStartedAt, undefined);
+  close = await registerGoal(app.ctx);
+  assert.equal(app.goal().activeSeconds, stored.activeSeconds);
+  assert.ok(app.goal().activeStartedAt >= stored.updatedAt);
+  await app.command("/goal pause");
+  const snapshot = await app.rpc.get("romm0109.goal").get({ sessionID: "s1" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal((await app.rpc.get("romm0109.goal").get({ sessionID: "s1" })).elapsedMs, snapshot.elapsedMs);
+  await close();
 });

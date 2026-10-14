@@ -247,6 +247,7 @@ test("TUI plugin registers native slots, slash commands, and session panels", as
     app.slots.map((claim) => claim.replace ?? claim.append),
     ["prompt.footer", "home.footer.status", "session.panel"],
   );
+  assert.equal(app.getLayer()().mode, "global", "slash discovery remains active in autocomplete mode");
   const commands = app.getLayer()().commands;
   assert.deepEqual(
     commands.map((command) => command.slash.name),

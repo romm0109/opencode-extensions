@@ -1,5 +1,6 @@
 import type { Context } from "@opencode/plugin/tui/context";
 import { createCoordinationTui } from "./coordination/index.ts";
+import { createGoalTui } from "./goal-tui.ts";
 import { STARSHIP_PRESETS, type StarshipPresetID } from "./starship-presets.ts";
 import {
   BUILT_IN_STARSHIP_TEMPLATE,
@@ -557,7 +558,7 @@ export function createTuiPlugin(dependencies: TuiDependencies = {}) {
         }),
       );
       ctx.keymap.layer(() => ({
-        mode: "base",
+        mode: "global",
         commands: [
           {
             id: "romm0109.workflow.open",
@@ -726,11 +727,25 @@ export function createTuiPlugin(dependencies: TuiDependencies = {}) {
 
 const presentationPlugin = createTuiPlugin();
 const coordinationPlugin = createCoordinationTui();
+const goalPlugin = createGoalTui();
 
 export default {
   id: presentationPlugin.id,
   async setup(ctx: Context) {
-    await presentationPlugin.setup(ctx);
-    await coordinationPlugin.setup(ctx);
+    // Register Goal before asynchronous presentation setup so partial startup can cancel it.
+    const disposeGoal = goalPlugin.setup(ctx);
+    let disposePresentation: (() => void) | undefined;
+    try {
+      disposePresentation = await presentationPlugin.setup(ctx);
+      await coordinationPlugin.setup(ctx);
+      return () => {
+        disposeGoal();
+        disposePresentation?.();
+      };
+    } catch (error) {
+      disposeGoal();
+      disposePresentation?.();
+      throw error;
+    }
   },
 };

@@ -10,6 +10,7 @@ function harness() {
   const sessionHooks = new Map();
   const permissionHooks = new Map();
   const context = {
+    rpc: { register: async () => ({ dispose: async () => {} }) },
     app: { version: "2.0.28" },
     location: { project: { id: "project-test" } },
     options: {},
@@ -175,6 +176,7 @@ test("plan context removes CodeMode and all non-allowlisted nested execution too
   await plugin.setup(app.context);
   await app.commands.get("plan").execute({ sessionID: "s1", prompt: { text: "/plan inspect safely" } });
   const context = {
+    rpc: { register: async () => ({ dispose: async () => {} }) },
     sessionID: "s1",
     system: [],
     messages: [],

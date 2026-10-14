@@ -1,4 +1,5 @@
 import { createGoalRuntime, goalContract, ownsGoal, planOwnsWorkflow, sameGoal } from "./goal-runtime.ts";
+import { readGoalSettings, registerGoalSettings } from "./goal-settings.ts";
 import type { PluginContext } from "./plugin-types.ts";
 import { workflowTransition } from "./workflow-lock.ts";
 import { canResumeGoal, parseGoalCommand, renderGoalStatus, startGoal, transitionGoal } from "./workflow-state.ts";
@@ -8,7 +9,7 @@ const boundedText = (value: unknown, max: number) => typeof value === "string" &
 const evidenceValid = (value: unknown, max: number): value is string[] =>
   Array.isArray(value) && value.length > 0 && value.length <= max && value.every((item) => boundedText(item, 500));
 
-export async function registerGoal(ctx: PluginContext): Promise<() => void> {
+export async function registerGoal(ctx: PluginContext): Promise<() => Promise<void>> {
   const runtime = createGoalRuntime(ctx);
   const notice = (sessionID: string, text: string) => ctx.session.synthetic({ sessionID, text, resume: false });
   const submit = async (sessionID: string, text: string) => {
@@ -30,10 +31,7 @@ export async function registerGoal(ctx: PluginContext): Promise<() => void> {
     runtime.invalidate(event.sessionID);
     await runtime.mutate(event.sessionID, (goal) => {
       if (!ownsGoal(goal) || !goal) return goal;
-      const next =
-        goal.status === "waiting"
-          ? transitionGoal(goal, "active", { waitingFor: undefined, resumeAt: undefined })
-          : goal;
+      const next = transitionGoal(goal, "active", { waitingFor: undefined, resumeAt: undefined });
       return { ...next, automaticTurns: 0, noProgressTurns: 0, lastOutputFingerprint: undefined };
     });
   });
@@ -68,7 +66,7 @@ export async function registerGoal(ctx: PluginContext): Promise<() => void> {
         }
         event.messages.splice(boundary, 0, { role: "user", content: [{ type: "text", text: contract }] });
       }
-      if (current.automaticTurns >= current.automaticTurnLimit) {
+      if (current.automaticTurnLimit !== null && current.automaticTurns >= current.automaticTurnLimit) {
         await runtime.mutate(event.sessionID, (latest) =>
           sameGoal(latest, current) && latest ? transitionGoal(latest, "paused") : latest,
         );
@@ -324,8 +322,11 @@ export async function registerGoal(ctx: PluginContext): Promise<() => void> {
               );
               return;
             }
+            const settings = await readGoalSettings(ctx);
             const resumed = {
               ...transitionGoal(goal, "active", { waitingFor: undefined, resumeAt: undefined }),
+              automaticTurnLimit: settings.automaticTurns,
+              noProgressTurnLimit: settings.noProgressTurns,
               baselineTokens: undefined,
               automaticTurns: 0,
               noProgressTurns: 0,
@@ -344,7 +345,7 @@ export async function registerGoal(ctx: PluginContext): Promise<() => void> {
               return;
             }
             const edited = {
-              ...goal,
+              ...transitionGoal(goal, goal.status),
               objective: parsed.objective,
               lifecycle: goal.lifecycle + 1,
               updatedAt: Date.now(),
@@ -372,13 +373,19 @@ export async function registerGoal(ctx: PluginContext): Promise<() => void> {
             );
             return;
           }
-          const started = startGoal(parsed.objective, { tokenBudget: parsed.tokenBudget });
+          const settings = await readGoalSettings(ctx);
+          const started = startGoal(parsed.objective, {
+            tokenBudget: parsed.tokenBudget,
+            automaticTurnLimit: settings.automaticTurns,
+            noProgressTurnLimit: settings.noProgressTurns,
+          });
           await runtime.mutate(sessionID, () => started);
           await submit(sessionID, goalContract(started));
         });
       },
     }),
   );
+  await registerGoalSettings(ctx, runtime);
   await runtime.start();
   return () => runtime.close();
 }

@@ -21,6 +21,7 @@ const hashes = {};
 for (const name of [
   "goal.ts",
   "goal-runtime.ts",
+  "goal-settings.ts",
   "workflow-state.ts",
   "workflow-lock.ts",
   "plan.ts",
@@ -452,6 +453,34 @@ try {
     assert.equal(counts.get("external-wake"), 2, "External wake left a stale deadline continuation");
     record("external-wake-timer-cancelled", true);
   }
+  await run("settings-and-elapsed", async () => {
+    const session = await create("settings");
+    const rpc = async (method, input) => {
+      const reply = await client.rpc.call({ rpcID: "romm0109.goal", method, location: { directory: project }, input });
+      assert(!reply.error, JSON.stringify(reply.error));
+      return reply.output;
+    };
+    await rpc("configure", { sessionID: session.id, automaticTurns: 2, noProgressTurns: null });
+    await command(session.id, "/goal scenario:settings verify settings safety limit");
+    await until(
+      () => state(session.id),
+      (value) => value.goal?.status === "paused",
+      "Settings safety limit did not pause Goal",
+    );
+    await wait(session.id);
+    const snapshot = await rpc("get", { sessionID: session.id });
+    assert.equal(snapshot.settings.automaticTurns, 2);
+    assert.equal(snapshot.goal.automaticTurns, 2);
+    assert.equal(snapshot.goal.noProgressTurnLimit, null);
+    assert.equal(counts.get("settings"), 2);
+    await pause(30);
+    assert.equal((await rpc("get", { sessionID: session.id })).elapsedMs, snapshot.elapsedMs);
+    record("settings-and-elapsed", {
+      requests: counts.get("settings"),
+      persistedLimit: 2,
+      pausedElapsedMs: snapshot.elapsedMs,
+    });
+  });
   assert.equal(providerErrors.length, 0, providerErrors.join("\n"));
   assert(
     !results.some((item) => item.name.endsWith("-failed")),
